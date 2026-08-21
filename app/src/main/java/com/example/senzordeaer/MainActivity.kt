@@ -274,9 +274,9 @@ fun MainAppScreen(profile: UserProfile?, profileError: String?, sessionManager: 
                             selectedItem = "Lista Dispozitive"
                         }
                         "Chat AI" -> AiChatScreen(fastApiService)
-                        "Dashboard AI" -> AiDashboardScreen(fastApiService)
-                        "Prognoză AI" -> AiForecastScreen(fastApiService)
-                        "Antrenare AI" -> AiTrainingScreen(fastApiService)
+                        "Dashboard AI" -> AiDashboardScreen(profile, sessionManager, dbService, fastApiService)
+                        "Prognoză AI" -> AiForecastScreen(profile, sessionManager, dbService, fastApiService)
+                        "Antrenare AI" -> AiTrainingScreen(profile, sessionManager, dbService, fastApiService)
                         "Status AI" -> AiSettingsScreen(fastApiService)
                         "QR Login" -> QRScannerScreen(
                             userId = sessionManager.userId ?: "",
@@ -362,6 +362,93 @@ private fun formatAiVal(value: Any?): String {
 private fun formatNum(v: Any?): String {
     if (v is Number) return String.format(Locale.US, "%.1f", v.toDouble())
     return v?.toString() ?: "-"
+}
+
+private fun selectedDeviceId(device: Device?): String? = device?.device_id?.takeIf { it.isNotBlank() }
+
+private fun deviceDisplayName(device: Device): String {
+    val name = device.name?.takeIf { it.isNotBlank() } ?: "Dispozitiv"
+    val id = device.device_id?.takeIf { it.isNotBlank() }
+    return id?.let { "$name ($it)" } ?: name
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AiDeviceSelector(
+    profile: UserProfile?,
+    sessionManager: SessionManager,
+    dbService: SupabaseService,
+    selectedDevice: Device?,
+    onDeviceSelected: (Device?) -> Unit
+) {
+    var devices by remember { mutableStateOf<List<Device>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var expanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(profile, sessionManager.accessToken, sessionManager.userId) {
+        val token = sessionManager.accessToken
+        val uid = sessionManager.userId
+        if (profile == null || token == null || uid == null) return@LaunchedEffect
+
+        isLoading = true
+        error = null
+        try {
+            val fetchedDevices = withContext(Dispatchers.IO) {
+                dbService.getMyDevices(token, uid)?.toList() ?: emptyList()
+            }
+            devices = fetchedDevices
+            val currentDeviceId = selectedDeviceId(selectedDevice)
+            if (currentDeviceId == null || fetchedDevices.none { it.device_id == currentDeviceId }) {
+                onDeviceSelected(fetchedDevices.firstOrNull())
+            }
+        } catch (e: Exception) {
+            error = "Nu am putut încărca dispozitivele: ${e.message}"
+            devices = emptyList()
+            onDeviceSelected(null)
+        } finally {
+            isLoading = false
+        }
+    }
+
+    Text("Selectează dispozitivul:", style = MaterialTheme.typography.labelMedium)
+    Spacer(Modifier.height(6.dp))
+    when {
+        isLoading -> CircularProgressIndicator(Modifier.size(20.dp))
+        error != null -> Text(error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        devices.isEmpty() -> Text("Nu există dispozitive asociate contului.", style = MaterialTheme.typography.bodySmall)
+        else -> ExposedDropdownMenuBox(
+            expanded = expanded,
+            onExpandedChange = { expanded = !expanded }
+        ) {
+            OutlinedTextField(
+                value = selectedDevice?.let(::deviceDisplayName) ?: "Alege un dispozitiv",
+                onValueChange = {},
+                readOnly = true,
+                singleLine = true,
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                modifier = Modifier
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable, true)
+                    .fillMaxWidth()
+            )
+
+            ExposedDropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false },
+                modifier = Modifier.heightIn(max = 320.dp)
+            ) {
+                devices.forEach { device ->
+                    DropdownMenuItem(
+                        text = { Text(deviceDisplayName(device), fontSize = 13.sp) },
+                        onClick = {
+                            onDeviceSelected(device)
+                            expanded = false
+                        }
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -568,11 +655,12 @@ fun AiForecastResults(response: Map<String, Any?>) {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun AiDashboardScreen(apiService: FastApiService) {
+fun AiDashboardScreen(profile: UserProfile?, sessionManager: SessionManager, dbService: SupabaseService, apiService: FastApiService) {
     val coroutineScope = rememberCoroutineScope()
     var predictionData by remember { mutableStateOf<Map<String, Any>?>(null) }
     var anomalyData by remember { mutableStateOf<Map<String, Any>?>(null) }
     var selectedPredictionAlgorithm by remember { mutableStateOf("random_forest") }
+    var selectedDevice by remember { mutableStateOf<Device?>(null) }
     var isPredicting by remember { mutableStateOf(false) }
     var isCheckingAnomaly by remember { mutableStateOf(false) }
     val isLoading = isPredicting || isCheckingAnomaly
@@ -594,6 +682,20 @@ fun AiDashboardScreen(apiService: FastApiService) {
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text("Acțiuni rapide", fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp), fontSize = 14.sp)
+
+                AiDeviceSelector(
+                    profile = profile,
+                    sessionManager = sessionManager,
+                    dbService = dbService,
+                    selectedDevice = selectedDevice,
+                    onDeviceSelected = { device ->
+                        selectedDevice = device
+                        predictionData = null
+                        anomalyData = null
+                    }
+                )
+
+                Spacer(Modifier.height(12.dp))
 
                 Text("Algoritm pentru predicție", style = MaterialTheme.typography.labelMedium)
                 FlowRow(
@@ -623,11 +725,12 @@ fun AiDashboardScreen(apiService: FastApiService) {
                     Button(onClick = {
                         isPredicting = true
                         anomalyData = null
+                        val deviceId = selectedDeviceId(selectedDevice)
                         coroutineScope.launch {
-                            predictionData = apiService.getPrediction(selectedPredictionAlgorithm)
+                            predictionData = apiService.getPrediction(selectedPredictionAlgorithm, deviceId)
                             isPredicting = false
                         }
-                    }, enabled = !isLoading, modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { 
+                    }, enabled = !isLoading && selectedDeviceId(selectedDevice) != null, modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { 
                         Text("Update Status", fontSize = 10.sp) 
                     }
                     
@@ -635,11 +738,12 @@ fun AiDashboardScreen(apiService: FastApiService) {
                         isCheckingAnomaly = true
                         predictionData = null
                         anomalyData = null
+                        val deviceId = selectedDeviceId(selectedDevice)
                         coroutineScope.launch {
-                            anomalyData = apiService.getAnomaly()
+                            anomalyData = apiService.getAnomaly(deviceId)
                             isCheckingAnomaly = false
                         }
-                    }, enabled = !isLoading, modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { 
+                    }, enabled = !isLoading && selectedDeviceId(selectedDevice) != null, modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { 
                         Text("Check Anomalii", fontSize = 10.sp) 
                     }
                 }
@@ -659,9 +763,10 @@ fun AiDashboardScreen(apiService: FastApiService) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AiForecastScreen(apiService: FastApiService) {
+fun AiForecastScreen(profile: UserProfile?, sessionManager: SessionManager, dbService: SupabaseService, apiService: FastApiService) {
     val coroutineScope = rememberCoroutineScope()
     var forecastData by remember { mutableStateOf<Map<String, Any>?>(null) }
+    var selectedDevice by remember { mutableStateOf<Device?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     
     val possibleHorizons = listOf(1, 3, 6, 12, 24, 48)
@@ -670,6 +775,19 @@ fun AiForecastScreen(apiService: FastApiService) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState())) {
         Text("Prognoză AI", style = MaterialTheme.typography.headlineMedium)
         Text("Valori numerice estimate pentru viitor", style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(16.dp))
+
+        AiDeviceSelector(
+            profile = profile,
+            sessionManager = sessionManager,
+            dbService = dbService,
+            selectedDevice = selectedDevice,
+            onDeviceSelected = { device ->
+                selectedDevice = device
+                forecastData = null
+            }
+        )
+
         Spacer(Modifier.height(16.dp))
         
         Text("Selectează Orizonturi (ore):", style = MaterialTheme.typography.labelMedium)
@@ -685,11 +803,12 @@ fun AiForecastScreen(apiService: FastApiService) {
 
         Button(onClick = {
             isLoading = true
+            val deviceId = selectedDeviceId(selectedDevice)
             coroutineScope.launch {
-                forecastData = apiService.getForecast(selectedHorizons.sorted())
+                forecastData = apiService.getForecast(selectedHorizons.sorted(), deviceId)
                 isLoading = false
             }
-        }, enabled = !isLoading, modifier = Modifier.fillMaxWidth()) {
+        }, enabled = !isLoading && selectedDeviceId(selectedDevice) != null && selectedHorizons.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
             if (isLoading) CircularProgressIndicator(Modifier.size(18.dp)) else Text("Obține Valori Viitoare", fontSize = 12.sp)
         }
 
@@ -864,9 +983,10 @@ private fun TrainingModelDetails(modelId: String, modelLabel: String, report: Ma
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun AiTrainingScreen(apiService: FastApiService) {
+fun AiTrainingScreen(profile: UserProfile?, sessionManager: SessionManager, dbService: SupabaseService, apiService: FastApiService) {
     val coroutineScope = rememberCoroutineScope()
     var selectedModel by remember { mutableStateOf("random_forest") }
+    var selectedDevice by remember { mutableStateOf<Device?>(null) }
     var hours by remember { mutableStateOf("") }
     var minutes by remember { mutableStateOf("") }
     var report by remember { mutableStateOf<Map<String, Any>?>(null) }
@@ -890,6 +1010,19 @@ fun AiTrainingScreen(apiService: FastApiService) {
         item {
             Text("Antrenare Model", style = MaterialTheme.typography.headlineMedium)
             Text("Ajustează algoritmul AI pentru mai multă precizie", style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(16.dp))
+
+            AiDeviceSelector(
+                profile = profile,
+                sessionManager = sessionManager,
+                dbService = dbService,
+                selectedDevice = selectedDevice,
+                onDeviceSelected = { device ->
+                    selectedDevice = device
+                    report = null
+                }
+            )
+
             Spacer(Modifier.height(16.dp))
 
             Text("Selectează Algoritmul:", style = MaterialTheme.typography.labelMedium)
@@ -932,16 +1065,18 @@ fun AiTrainingScreen(apiService: FastApiService) {
 
             Button(onClick = {
                 isLoading = true
+                val deviceId = selectedDeviceId(selectedDevice)
                 coroutineScope.launch {
                     report = apiService.trainModel(
                         model = selectedModel,
                         hours = parsedHours,
                         minutes = parsedMinutes,
+                        deviceId = deviceId,
                         allowDerivedLabelFallback = true
                     )
                     isLoading = false
                 }
-            }, enabled = !isLoading && hasValidDuration, modifier = Modifier.fillMaxWidth()) {
+            }, enabled = !isLoading && hasValidDuration && selectedDeviceId(selectedDevice) != null, modifier = Modifier.fillMaxWidth()) {
                 if (isLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp)) else Text("Lansează Antrenarea")
             }
         }

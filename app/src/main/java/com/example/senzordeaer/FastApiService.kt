@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URLEncoder
 
 class FastApiService {
     private val client = OkHttpClient()
@@ -19,6 +20,18 @@ class FastApiService {
             .post(body)
             .build()
     }
+
+    private fun pathWithQuery(path: String, params: Map<String, String?>): String {
+        val query = params
+            .filterValues { !it.isNullOrBlank() }
+            .map { (key, value) -> "${encodeQueryParam(key)}=${encodeQueryParam(value.orEmpty())}" }
+            .joinToString("&")
+        if (query.isBlank()) return path
+        val separator = if (path.contains("?")) "&" else "?"
+        return "$path$separator$query"
+    }
+
+    private fun encodeQueryParam(value: String): String = URLEncoder.encode(value, "UTF-8")
 
     suspend fun chatWithAi(message: String): String = withContext(Dispatchers.IO) {
         val json = gson.toJson(mapOf("message" to message))
@@ -35,18 +48,26 @@ class FastApiService {
         }
     }
 
-    suspend fun getPrediction(algorithm: String = "random_forest"): Map<String, Any>? = withContext(Dispatchers.IO) {
-        executeAnalysisRequest(createPostRequest("/predict?model_type=$algorithm"))
-    }
-
-    suspend fun getForecast(horizons: List<Int> = listOf(1, 3, 6, 12, 24)): Map<String, Any>? = withContext(Dispatchers.IO) {
-        val horizonsStr = horizons.joinToString(",")
-        val url = "/predict?include_forecast=true&forecast_horizons=$horizonsStr"
+    suspend fun getPrediction(algorithm: String = "random_forest", deviceId: String? = null): Map<String, Any>? = withContext(Dispatchers.IO) {
+        val url = pathWithQuery("/predict", mapOf("model_type" to algorithm, "device_id" to deviceId))
         executeAnalysisRequest(createPostRequest(url))
     }
 
-    suspend fun getAnomaly(): Map<String, Any>? = withContext(Dispatchers.IO) {
-        executeAnalysisRequest(createPostRequest("/anomaly"))
+    suspend fun getForecast(horizons: List<Int> = listOf(1, 3, 6, 12, 24), deviceId: String? = null): Map<String, Any>? = withContext(Dispatchers.IO) {
+        val horizonsStr = horizons.joinToString(",")
+        val url = pathWithQuery(
+            "/predict",
+            mapOf(
+                "include_forecast" to "true",
+                "forecast_horizons" to horizonsStr,
+                "device_id" to deviceId
+            )
+        )
+        executeAnalysisRequest(createPostRequest(url))
+    }
+
+    suspend fun getAnomaly(deviceId: String? = null): Map<String, Any>? = withContext(Dispatchers.IO) {
+        executeAnalysisRequest(createPostRequest(pathWithQuery("/anomaly", mapOf("device_id" to deviceId))))
     }
 
     suspend fun predictCustom(temp: Float, hum: Float, pm25: Float, pm10: Float, co2: Int): Map<String, Any>? = withContext(Dispatchers.IO) {
@@ -64,11 +85,13 @@ class FastApiService {
         model: String,
         hours: Int? = null,
         minutes: Int? = null,
+        deviceId: String? = null,
         allowDerivedLabelFallback: Boolean = true
     ): Map<String, Any>? = withContext(Dispatchers.IO) {
         val params = mutableMapOf<String, Any>("training_model" to model)
         if (hours != null) params["aggregation_hours"] = hours
         if (minutes != null) params["aggregation_minutes"] = minutes
+        if (!deviceId.isNullOrBlank()) params["device_id"] = deviceId
         params["allow_derived_label_fallback"] = allowDerivedLabelFallback
         val json = gson.toJson(params)
         executeAnalysisRequest(createPostRequest("/train", json))
