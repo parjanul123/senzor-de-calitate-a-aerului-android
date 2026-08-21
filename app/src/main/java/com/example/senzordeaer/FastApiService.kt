@@ -7,10 +7,19 @@ import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
+import java.net.SocketTimeoutException
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
 class FastApiService {
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(75, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(90, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
     private val gson = Gson()
     private val baseUrl = "https://ai-senzor-de-calitate-a-aerului-production.up.railway.app"
 
@@ -73,8 +82,15 @@ class FastApiService {
                 nestedMessage?.takeIf { it.isNotBlank() }
                     ?: responseBody.ifBlank { "AI-ul nu are un răspuns." }
             }
+        } catch (e: SocketTimeoutException) {
+            Log.w("FastApiService", "Chat AI timed out", e)
+            "AI-ul răspunde prea greu momentan. Încearcă din nou peste câteva secunde."
+        } catch (e: IOException) {
+            Log.w("FastApiService", "Chat AI connection failed", e)
+            "Nu mă pot conecta la serverul AI. Verifică internetul sau statusul serviciului AI."
         } catch (e: Exception) {
-            "Eroare de conexiune la AI."
+            Log.w("FastApiService", "Chat AI request failed", e)
+            "A apărut o eroare la comunicarea cu AI-ul."
         }
     }
 
