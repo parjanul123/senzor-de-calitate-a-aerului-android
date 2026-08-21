@@ -1434,7 +1434,9 @@ fun DevicesListScreen(profile: UserProfile?, sessionManager: SessionManager, dbS
 fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbService: SupabaseService, onOpenWifiSetup: () -> Unit, onOpenMeasurements: () -> Unit, onDeviceUpdated: (Device) -> Unit) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val transportProfileStore = remember { TransportProfileStore(context) }
     var showLocationDialog by remember { mutableStateOf(false) }
+    var showTransportProfileDialog by remember { mutableStateOf(false) }
     var newLocation by remember { mutableStateOf(device.location ?: "") }
     var isUpdating by remember { mutableStateOf(false) }
 
@@ -1444,6 +1446,10 @@ fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbSe
         Spacer(modifier = Modifier.height(24.dp))
         
         Button(onClick = onOpenMeasurements, modifier = Modifier.fillMaxWidth()) { Text("Vezi Măsurători Live") }
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedButton(onClick = { showTransportProfileDialog = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("Profil transport marfă")
+        }
         Spacer(modifier = Modifier.height(8.dp))
         Button(onClick = { showLocationDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("Modifică Locația") }
         Spacer(modifier = Modifier.height(8.dp))
@@ -1480,10 +1486,108 @@ fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbSe
             dismissButton = { TextButton(onClick = { showLocationDialog = false }) { Text("Anulare") } }
         )
     }
+
+    if (showTransportProfileDialog) {
+        TransportProfileDialog(
+            initialProfile = transportProfileStore.get(device.device_id),
+            onDismiss = { showTransportProfileDialog = false },
+            onSave = { profile ->
+                transportProfileStore.save(device.device_id, profile)
+                showTransportProfileDialog = false
+                Toast.makeText(context, "Profilul de transport a fost salvat.", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+}
+
+@Composable
+private fun TransportProfileDialog(
+    initialProfile: TransportProfile?,
+    onDismiss: () -> Unit,
+    onSave: (TransportProfile) -> Unit
+) {
+    var cargoName by remember { mutableStateOf(initialProfile?.cargoName ?: "") }
+    val limits = remember { mutableStateMapOf<String, ParameterLimit>().apply { putAll(initialProfile?.limits.orEmpty()) } }
+    var selectedParameter by remember { mutableStateOf(transportParameters.first()) }
+    var showParameterMenu by remember { mutableStateOf(false) }
+    var minimumValue by remember { mutableStateOf("") }
+    var maximumValue by remember { mutableStateOf("") }
+    var validationError by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Profil transport marfă") },
+        text = {
+            Column(
+                modifier = Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Operatorul stabilește limitele pentru marfa transportată.")
+                OutlinedTextField(cargoName, { cargoName = it }, label = { Text("Marfă / transport") }, singleLine = true)
+                Text("Adaugă prag pentru un parametru", fontWeight = FontWeight.Bold)
+                Box {
+                    OutlinedButton(onClick = { showParameterMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("${selectedParameter.label} (${selectedParameter.unit})")
+                    }
+                    DropdownMenu(expanded = showParameterMenu, onDismissRequest = { showParameterMenu = false }) {
+                        transportParameters.forEach { parameter ->
+                            DropdownMenuItem(
+                                text = { Text("${parameter.label} (${parameter.unit})") },
+                                onClick = {
+                                    selectedParameter = parameter
+                                    minimumValue = limits[parameter.id]?.minimum?.toString() ?: ""
+                                    maximumValue = limits[parameter.id]?.maximum?.toString() ?: ""
+                                    showParameterMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(minimumValue, { minimumValue = it }, label = { Text("Valoare minimă") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                OutlinedTextField(maximumValue, { maximumValue = it }, label = { Text("Valoare maximă") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                OutlinedButton(onClick = {
+                    val minimum = minimumValue.replace(',', '.').toFloatOrNull()
+                    val maximum = maximumValue.replace(',', '.').toFloatOrNull()
+                    validationError = when {
+                        minimum == null || maximum == null -> "Introdu valori minime și maxime numerice."
+                        minimum > maximum -> "Valoarea minimă trebuie să fie cel mult egală cu maxima."
+                        selectedParameter.id == "humidity" && (minimum !in 0f..100f || maximum !in 0f..100f) -> "Umiditatea trebuie să fie între 0 și 100%."
+                        else -> null
+                    }
+                    if (validationError == null) {
+                        limits[selectedParameter.id] = ParameterLimit(minimum!!, maximum!!)
+                        minimumValue = ""
+                        maximumValue = ""
+                    }
+                }, modifier = Modifier.fillMaxWidth()) { Text("Adaugă / actualizează pragul") }
+                limits.forEach { (parameterId, limit) ->
+                    val parameter = transportParameters.first { it.id == parameterId }
+                    Text("${parameter.label}: ${limit.minimum} - ${limit.maximum} ${parameter.unit}")
+                }
+                validationError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                validationError = when {
+                    cargoName.isBlank() -> "Introdu numele mărfii sau al transportului."
+                    limits.isEmpty() -> "Adaugă cel puțin un prag de parametru."
+                    else -> null
+                }
+                if (validationError == null) {
+                    onSave(TransportProfile(cargoName.trim(), limits.toMap()))
+                }
+            }) { Text("Salvează") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Anulare") } }
+    )
 }
 
 @Composable
 fun DeviceMeasurementsScreen(device: Device, sessionManager: SessionManager, dbService: SupabaseService) {
+    val context = LocalContext.current
+    val transportProfileStore = remember { TransportProfileStore(context) }
+    val transportProfile = remember(device.device_id) { transportProfileStore.get(device.device_id) }
     var measurements by remember { mutableStateOf<List<Measurement>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
 
@@ -1516,12 +1620,16 @@ fun DeviceMeasurementsScreen(device: Device, sessionManager: SessionManager, dbS
                 if (current != null) {
                     Text("Ultima citire: ${current.created_at}", style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(16.dp))
+                    transportProfile?.let { profile ->
+                        TransportStatusCard(profile, current)
+                        Spacer(Modifier.height(12.dp))
+                    }
                     AirQualityGauge("CO₂", current.co2.toFloat(), "ppm", 1000f, 2000f, 3000f, "Optim", "Aerisește", "Periculos")
                     AirQualityGauge("PM1", current.pm1.toFloat(), "µg/m³", 10f, 25f, 100f, "Curat", "Moderat", "Poluat")
                     AirQualityGauge("PM2.5", current.pm25.toFloat(), "µg/m³", 12f, 35f, 100f, "Curat", "Moderat", "Poluat")
                     AirQualityGauge("PM10", current.pm10.toFloat(), "µg/m³", 45f, 100f, 200f, "Curat", "Moderat", "Poluat")
-                    CustomGauge("Temperatură", current.temperatura, "°C", 40f, { value -> if (value < 18f) Color.Blue else if (value <= 25f) Color(0xFF2E7D32) else Color.Red }, { value -> if (value < 18f) "Rece" else if (value <= 25f) "Optim" else "Cald" })
-                    CustomGauge("Umiditate", current.umiditate, "%", 100f, { value -> if (value in 40f..60f) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> if (value in 40f..60f) "Optimă" else "În afara intervalului" })
+                    CustomGauge("Temperatură", current.temperatura, "°C", 40f, { value -> if (transportProfile?.isWithinLimit("temperature", value) != false) Color(0xFF2E7D32) else Color.Red }, { value -> transportProfile?.let { if (it.isWithinLimit("temperature", value)) "În limite" else "În afara limitei" } ?: "Configurează profilul" })
+                    CustomGauge("Umiditate", current.umiditate, "%", 100f, { value -> if (transportProfile?.isWithinLimit("humidity", value) != false) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> transportProfile?.let { if (it.isWithinLimit("humidity", value)) "În limite" else "În afara limitei" } ?: "Configurează profilul" })
                     CustomGauge("Presiune", current.presiune, "hPa", 1100f, { value -> if (isNormalAtmosphericPressure(value)) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> if (isNormalAtmosphericPressure(value)) "Normală" else "În afara intervalului" })
                     CustomGauge("VOC", current.voc, "KOhm", 500f, { value -> if (value >= 100f) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> if (value >= 100f) "Nivel bun" else "Verifică aerisirea" })
                     CustomGauge("Lumină", current.lux, "lux", 1000f, { value -> if (value >= 100f) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> if (value >= 100f) "Iluminare bună" else "Lumină redusă" })
@@ -1535,6 +1643,58 @@ fun DeviceMeasurementsScreen(device: Device, sessionManager: SessionManager, dbS
             }
         }
     }
+}
+
+@Composable
+private fun TransportStatusCard(profile: TransportProfile, measurement: Measurement) {
+    val statuses = profile.limits.mapNotNull { (parameterId, limit) ->
+        val parameter = transportParameters.firstOrNull { it.id == parameterId } ?: return@mapNotNull null
+        val value = measurement.valueFor(parameterId)
+        Triple(parameter, value, value in limit.minimum..limit.maximum)
+    }
+    val isWithinLimits = statuses.all { it.third }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isWithinLimits) Color(0xFFE8F5E9) else Color(0xFFFFEBEE)
+        )
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text("Transport: ${profile.cargoName}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            statuses.forEach { (parameter, value, isWithinLimit) ->
+                val limit = profile.limits.getValue(parameter.id)
+                Text(
+                    "${parameter.label}: $value ${parameter.unit} (admis ${limit.minimum} - ${limit.maximum})",
+                    color = if (isWithinLimit) Color(0xFF2E7D32) else Color(0xFFC62828)
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                if (isWithinLimits) "În limitele configurate" else "Avertizare: verifică temperatura sau umiditatea",
+                color = if (isWithinLimits) Color(0xFF2E7D32) else Color(0xFFC62828),
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+private fun TransportProfile.isWithinLimit(parameterId: String, value: Float): Boolean {
+    val limit = limits[parameterId] ?: return true
+    return value in limit.minimum..limit.maximum
+}
+
+private fun Measurement.valueFor(parameterId: String): Float = when (parameterId) {
+    "temperature" -> temperatura
+    "humidity" -> umiditate
+    "pressure" -> presiune
+    "voc" -> voc
+    "light" -> lux
+    "co2" -> co2.toFloat()
+    "pm1" -> pm1.toFloat()
+    "pm25" -> pm25.toFloat()
+    "pm10" -> pm10.toFloat()
+    else -> 0f
 }
 
 private fun isPlausibleMeasurement(measurement: Measurement): Boolean =
