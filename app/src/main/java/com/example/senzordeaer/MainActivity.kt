@@ -1436,9 +1436,48 @@ fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbSe
     val coroutineScope = rememberCoroutineScope()
     val transportProfileStore = remember { TransportProfileStore(context) }
     var showLocationDialog by remember { mutableStateOf(false) }
+    var showTransportProfileList by remember { mutableStateOf(false) }
     var showTransportProfileDialog by remember { mutableStateOf(false) }
+    var profileRevision by remember { mutableIntStateOf(0) }
     var newLocation by remember { mutableStateOf(device.location ?: "") }
     var isUpdating by remember { mutableStateOf(false) }
+
+    LaunchedEffect(device.device_id) {
+        val token = sessionManager.accessToken
+        val userId = sessionManager.userId
+        if (token != null && userId != null) {
+            try {
+                val remoteProfiles = withContext(Dispatchers.IO) { dbService.getTransportProfiles(token, userId) }
+                if (remoteProfiles != null && remoteProfiles != "null") {
+                    transportProfileStore.importFromRemote(remoteProfiles)
+                    profileRevision++
+                }
+            } catch (error: Exception) {
+                Toast.makeText(context, "Profilele locale nu au putut fi sincronizate: ${error.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    fun saveProfileInDatabase(profile: TransportProfile) {
+        val token = sessionManager.accessToken
+        val userId = sessionManager.userId
+        if (token == null || userId == null) {
+            Toast.makeText(context, "Sesiunea utilizatorului lipsește.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                dbService.saveTransportProfiles(token, userId, device.device_id, transportProfileStore.exportProfile(profile))
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Profilele au fost salvate în baza de date.", Toast.LENGTH_SHORT).show()
+                }
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Salvarea în baza de date a eșuat: ${error.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Text("Setări Dispozitiv", style = MaterialTheme.typography.headlineMedium)
@@ -1447,8 +1486,8 @@ fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbSe
         
         Button(onClick = onOpenMeasurements, modifier = Modifier.fillMaxWidth()) { Text("Vezi Măsurători Live") }
         Spacer(modifier = Modifier.height(8.dp))
-        OutlinedButton(onClick = { showTransportProfileDialog = true }, modifier = Modifier.fillMaxWidth()) {
-            Text("Profil transport marfă")
+        OutlinedButton(onClick = { showTransportProfileList = true }, modifier = Modifier.fillMaxWidth()) {
+            Text("Profile transport")
         }
         Spacer(modifier = Modifier.height(8.dp))
         Button(onClick = { showLocationDialog = true }, modifier = Modifier.fillMaxWidth()) { Text("Modifică Locația") }
@@ -1487,27 +1526,106 @@ fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbSe
         )
     }
 
+    if (showTransportProfileList) {
+        TransportProfileListDialog(
+            profiles = remember(profileRevision) { transportProfileStore.getProfiles() },
+            selectedProfileId = transportProfileStore.get(device.device_id).id,
+            onDismiss = { showTransportProfileList = false },
+            onSelect = { profileId ->
+                transportProfileStore.select(device.device_id, profileId)
+                profileRevision++
+                showTransportProfileList = false
+            },
+            onDelete = { profileId ->
+                val token = sessionManager.accessToken
+                val userId = sessionManager.userId
+                if (token == null || userId == null) return@TransportProfileListDialog
+                coroutineScope.launch(Dispatchers.IO) {
+                    try {
+                        dbService.deleteTransportProfile(token, userId, profileId)
+                        withContext(Dispatchers.Main) {
+                            transportProfileStore.delete(profileId)
+                            profileRevision++
+                            Toast.makeText(context, "Profilul a fost șters.", Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (error: Exception) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(context, "Ștergerea din baza de date a eșuat: ${error.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            },
+            onCreateProfile = {
+                showTransportProfileList = false
+                showTransportProfileDialog = true
+            }
+        )
+    }
+
     if (showTransportProfileDialog) {
         TransportProfileDialog(
-            initialProfile = transportProfileStore.get(device.device_id),
             onDismiss = { showTransportProfileDialog = false },
             onSave = { profile ->
-                transportProfileStore.save(device.device_id, profile)
+                val savedProfile = transportProfileStore.save(profile)
+                transportProfileStore.select(device.device_id, savedProfile.id)
+                profileRevision++
                 showTransportProfileDialog = false
-                Toast.makeText(context, "Profilul de transport a fost salvat.", Toast.LENGTH_SHORT).show()
+                saveProfileInDatabase(savedProfile)
             }
         )
     }
 }
 
 @Composable
+private fun TransportProfileListDialog(
+    profiles: List<TransportProfile>,
+    selectedProfileId: String,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onCreateProfile: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Profile transport") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Alege profilul folosit de acest dispozitiv.")
+                profiles.forEach { profile ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedButton(
+                            onClick = { onSelect(profile.id) },
+                            modifier = Modifier.weight(1f),
+                            colors = if (profile.id == selectedProfileId) {
+                                ButtonDefaults.outlinedButtonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                            } else ButtonDefaults.outlinedButtonColors()
+                        ) {
+                            Text(if (profile.id == selectedProfileId) "${profile.cargoName} (activ)" else profile.cargoName)
+                        }
+                        if (profile.id != TransportProfileStore.STANDARD_PROFILE_ID) {
+                            IconButton(onClick = { onDelete(profile.id) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Șterge profilul ${profile.cargoName}")
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { Button(onClick = onCreateProfile) { Text("Creează profil") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Închide") } }
+    )
+}
+
+@Composable
 private fun TransportProfileDialog(
-    initialProfile: TransportProfile?,
     onDismiss: () -> Unit,
     onSave: (TransportProfile) -> Unit
 ) {
-    var cargoName by remember { mutableStateOf(initialProfile?.cargoName ?: "") }
-    val limits = remember { mutableStateMapOf<String, ParameterLimit>().apply { putAll(initialProfile?.limits.orEmpty()) } }
+    var cargoName by remember { mutableStateOf("") }
+    val limits = remember { mutableStateMapOf<String, ParameterLimit>() }
     var selectedParameter by remember { mutableStateOf(transportParameters.first()) }
     var showParameterMenu by remember { mutableStateOf(false) }
     var minimumValue by remember { mutableStateOf("") }
@@ -1523,7 +1641,7 @@ private fun TransportProfileDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text("Operatorul stabilește limitele pentru marfa transportată.")
-                OutlinedTextField(cargoName, { cargoName = it }, label = { Text("Marfă / transport") }, singleLine = true)
+                OutlinedTextField(cargoName, { cargoName = it }, label = { Text("Nume profil") }, singleLine = true)
                 Text("Adaugă prag pentru un parametru", fontWeight = FontWeight.Bold)
                 Box {
                     OutlinedButton(onClick = { showParameterMenu = true }, modifier = Modifier.fillMaxWidth()) {
@@ -1549,20 +1667,20 @@ private fun TransportProfileDialog(
                     val minimum = minimumValue.replace(',', '.').toFloatOrNull()
                     val maximum = maximumValue.replace(',', '.').toFloatOrNull()
                     validationError = when {
-                        minimum == null || maximum == null -> "Introdu valori minime și maxime numerice."
-                        minimum > maximum -> "Valoarea minimă trebuie să fie cel mult egală cu maxima."
-                        selectedParameter.id == "humidity" && (minimum !in 0f..100f || maximum !in 0f..100f) -> "Umiditatea trebuie să fie între 0 și 100%."
+                        minimum == null && maximum == null -> "Introdu cel puțin un prag: minim sau maxim."
+                        minimum != null && maximum != null && minimum > maximum -> "Valoarea minimă trebuie să fie cel mult egală cu maxima."
+                        selectedParameter.id == "humidity" && ((minimum != null && minimum !in 0f..100f) || (maximum != null && maximum !in 0f..100f)) -> "Umiditatea trebuie să fie între 0 și 100%."
                         else -> null
                     }
                     if (validationError == null) {
-                        limits[selectedParameter.id] = ParameterLimit(minimum!!, maximum!!)
+                        limits[selectedParameter.id] = ParameterLimit(minimum, maximum)
                         minimumValue = ""
                         maximumValue = ""
                     }
                 }, modifier = Modifier.fillMaxWidth()) { Text("Adaugă / actualizează pragul") }
                 limits.forEach { (parameterId, limit) ->
                     val parameter = transportParameters.first { it.id == parameterId }
-                    Text("${parameter.label}: ${limit.minimum} - ${limit.maximum} ${parameter.unit}")
+                    Text("${parameter.label}: ${limitLabel(limit, parameter.unit)}")
                 }
                 validationError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             }
@@ -1575,7 +1693,7 @@ private fun TransportProfileDialog(
                     else -> null
                 }
                 if (validationError == null) {
-                    onSave(TransportProfile(cargoName.trim(), limits.toMap()))
+                    onSave(TransportProfile("", cargoName.trim(), limits.toMap()))
                 }
             }) { Text("Salvează") }
         },
@@ -1588,8 +1706,18 @@ fun DeviceMeasurementsScreen(device: Device, sessionManager: SessionManager, dbS
     val context = LocalContext.current
     val transportProfileStore = remember { TransportProfileStore(context) }
     val transportProfile = remember(device.device_id) { transportProfileStore.get(device.device_id) }
+    val transportProfileNotifier = remember { TransportProfileNotifier(context) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     var measurements by remember { mutableStateOf<List<Measurement>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     LaunchedEffect(device) {
         val token = sessionManager.accessToken
@@ -1600,6 +1728,9 @@ fun DeviceMeasurementsScreen(device: Device, sessionManager: SessionManager, dbS
                         val result = dbService.getDeviceMeasurements(token, device.device_id)
                         withContext(Dispatchers.Main) {
                             measurements = result?.filter(::isPlausibleMeasurement) ?: emptyList()
+                            measurements.firstOrNull()?.let { measurement ->
+                                transportProfileNotifier.notifyIfNeeded(device, transportProfile, measurement)
+                            }
                             isLoading = false
                         }
                     } catch (e: Exception) {
@@ -1650,7 +1781,7 @@ private fun TransportStatusCard(profile: TransportProfile, measurement: Measurem
     val statuses = profile.limits.mapNotNull { (parameterId, limit) ->
         val parameter = transportParameters.firstOrNull { it.id == parameterId } ?: return@mapNotNull null
         val value = measurement.valueFor(parameterId)
-        Triple(parameter, value, value in limit.minimum..limit.maximum)
+        Triple(parameter, value, profile.isWithinLimit(parameterId, value))
     }
     val isWithinLimits = statuses.all { it.third }
 
@@ -1665,7 +1796,7 @@ private fun TransportStatusCard(profile: TransportProfile, measurement: Measurem
             statuses.forEach { (parameter, value, isWithinLimit) ->
                 val limit = profile.limits.getValue(parameter.id)
                 Text(
-                    "${parameter.label}: $value ${parameter.unit} (admis ${limit.minimum} - ${limit.maximum})",
+                    "${parameter.label}: $value ${parameter.unit} (prag ${limitLabel(limit, parameter.unit)})",
                     color = if (isWithinLimit) Color(0xFF2E7D32) else Color(0xFFC62828)
                 )
             }
@@ -1679,12 +1810,20 @@ private fun TransportStatusCard(profile: TransportProfile, measurement: Measurem
     }
 }
 
-private fun TransportProfile.isWithinLimit(parameterId: String, value: Float): Boolean {
+fun TransportProfile.isWithinLimit(parameterId: String, value: Float): Boolean {
     val limit = limits[parameterId] ?: return true
-    return value in limit.minimum..limit.maximum
+    return (limit.minimum == null || value >= limit.minimum) &&
+        (limit.maximum == null || value <= limit.maximum)
 }
 
-private fun Measurement.valueFor(parameterId: String): Float = when (parameterId) {
+fun limitLabel(limit: ParameterLimit, unit: String): String = when {
+    limit.minimum != null && limit.maximum != null -> "${limit.minimum} - ${limit.maximum} $unit"
+    limit.minimum != null -> "minim ${limit.minimum} $unit"
+    limit.maximum != null -> "maxim ${limit.maximum} $unit"
+    else -> "fără prag"
+}
+
+fun Measurement.valueFor(parameterId: String): Float = when (parameterId) {
     "temperature" -> temperatura
     "humidity" -> umiditate
     "pressure" -> presiune
@@ -2245,8 +2384,9 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
                     if (isLoginMode) {
                         val response = authClient.login(email, password)
                         val token = response.get("access_token").asString
+                        val refreshToken = response.get("refresh_token").asString
                         val uid = response.getAsJsonObject("user").get("id").asString
-                        sessionManager.saveSession(token, "", uid)
+                        sessionManager.saveSession(token, refreshToken, uid)
                         val profile = dbService.getUserProfile(token, uid)
                         withContext(Dispatchers.Main) { onLoginSuccess(profile, null) }
                     } else {
@@ -2272,10 +2412,19 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
                         subtitle = "Folosește amprenta pentru a continua.",
                         onSuccess = {
                             coroutineScope.launch(Dispatchers.IO) {
-                                val token = sessionManager.accessToken
                                 val userId = sessionManager.userId
-                                if (token == null || userId == null) return@launch
+                                val refreshToken = sessionManager.refreshToken
+                                if (userId == null || refreshToken.isNullOrBlank()) {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, "Conectează-te o dată cu email și parolă pentru a activa amprenta.", Toast.LENGTH_LONG).show()
+                                    }
+                                    return@launch
+                                }
                                 try {
+                                    val refreshedSession = authClient.refreshSession(refreshToken)
+                                    val token = refreshedSession.get("access_token").asString
+                                    val newRefreshToken = refreshedSession.get("refresh_token").asString
+                                    sessionManager.saveSession(token, newRefreshToken, userId)
                                     val profile = dbService.getUserProfile(token, userId)
                                     withContext(Dispatchers.Main) { onLoginSuccess(profile, null) }
                                 } catch (error: Exception) {

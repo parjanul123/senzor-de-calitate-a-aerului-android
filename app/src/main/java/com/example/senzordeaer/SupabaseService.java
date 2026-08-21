@@ -2,6 +2,9 @@ package com.example.senzordeaer;
 
 import okhttp3.*;
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import java.io.IOException;
 
 public class SupabaseService {
@@ -60,6 +63,90 @@ public class SupabaseService {
             }
         }
         return new Device[0];
+    }
+
+    public String getTransportProfiles(String accessToken, String userId) throws IOException {
+        Request request = new Request.Builder()
+                .url(BASE_URL + "profiles?user_id=eq." + userId + "&select=id,name,device_id,temperature_min,temperature_max,humidity_min,humidity_max,pressure_min,pressure_max,co2_min,co2_max,pm25_min,pm25_max,pm10_min,pm10_max,light_min,light_max")
+                .addHeader("apikey", API_KEY)
+                .addHeader("Authorization", "Bearer " + accessToken)
+                .get()
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                String error = response.body() != null ? response.body().string() : "";
+                throw new IOException("Citirea profilelor a eșuat: " + response.code() + " " + error);
+            }
+            String body = response.body() != null ? response.body().string() : "[]";
+            JsonArray rows = JsonParser.parseString(body).getAsJsonArray();
+            return rows.toString();
+        }
+    }
+
+    public void saveTransportProfiles(String accessToken, String userId, String deviceId, String profilesJson) throws IOException {
+        JsonArray profiles = JsonParser.parseString(profilesJson).getAsJsonArray();
+        for (int index = 0; index < profiles.size(); index++) {
+            JsonObject profile = profiles.get(index).getAsJsonObject();
+            JsonObject limits = profile.has("limits") ? profile.getAsJsonObject("limits") : new JsonObject();
+            profile.remove("limits");
+            profile.remove("is_standard");
+            profile.addProperty("user_id", userId);
+            profile.addProperty("device_id", deviceId);
+            addLimitColumns(profile, limits, "temperature", "temperature_min", "temperature_max");
+            addLimitColumns(profile, limits, "humidity", "humidity_min", "humidity_max");
+            addLimitColumns(profile, limits, "pressure", "pressure_min", "pressure_max");
+            addLimitColumns(profile, limits, "co2", "co2_min", "co2_max");
+            addLimitColumns(profile, limits, "pm25", "pm25_min", "pm25_max");
+            addLimitColumns(profile, limits, "pm10", "pm10_min", "pm10_max");
+            addLimitColumns(profile, limits, "light", "light_min", "light_max");
+        }
+        RequestBody body = RequestBody.create(profiles.toString(), MediaType.parse("application/json"));
+        Request request = new Request.Builder()
+            .url(BASE_URL + "profiles?on_conflict=id")
+                .addHeader("apikey", API_KEY)
+                .addHeader("Authorization", "Bearer " + accessToken)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Prefer", "resolution=merge-duplicates,return=representation")
+                .post(body)
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                String error = response.body() != null ? response.body().string() : "";
+                throw new IOException("Salvarea profilelor a eșuat: " + response.code() + " " + error);
+            }
+            String savedRows = response.body() != null ? response.body().string().trim() : "";
+            if (savedRows.equals("[]") || savedRows.isEmpty()) {
+                throw new IOException("Profilul nu a putut fi creat sau actualizat.");
+            }
+        }
+    }
+
+    private void addLimitColumns(JsonObject profile, JsonObject limits, String parameter, String minimumColumn, String maximumColumn) {
+        JsonObject limit = limits.has(parameter) && limits.get(parameter).isJsonObject()
+                ? limits.getAsJsonObject(parameter) : null;
+        if (limit == null || !limit.has("minimum") || limit.get("minimum").isJsonNull()) profile.add(minimumColumn, null);
+        else profile.add(minimumColumn, limit.get("minimum"));
+        if (limit == null || !limit.has("maximum") || limit.get("maximum").isJsonNull()) profile.add(maximumColumn, null);
+        else profile.add(maximumColumn, limit.get("maximum"));
+    }
+
+    public void deleteTransportProfile(String accessToken, String userId, String profileId) throws IOException {
+        Request request = new Request.Builder()
+                .url(BASE_URL + "profiles?user_id=eq." + userId + "&id=eq." + profileId)
+                .addHeader("apikey", API_KEY)
+                .addHeader("Authorization", "Bearer " + accessToken)
+                .addHeader("Prefer", "return=representation")
+                .delete()
+                .build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                String error = response.body() != null ? response.body().string() : "";
+                throw new IOException("Ștergerea profilului a eșuat: " + response.code() + " " + error);
+            }
+        }
     }
     
     public void claimDevice(String accessToken, String userId, String deviceId, String name) throws IOException {

@@ -21,6 +21,11 @@ public class SupabaseAuthClient {
         return performAuthRequest(AUTH_URL + "token?grant_type=password", json);
     }
 
+    public JsonObject refreshSession(String refreshToken) throws IOException {
+        String json = String.format("{\"refresh_token\":\"%s\"}", refreshToken);
+        return performAuthRequest(AUTH_URL + "token?grant_type=refresh_token", json);
+    }
+
     private JsonObject performAuthRequest(String url, String json) throws IOException {
         RequestBody body = RequestBody.create(json, MediaType.parse("application/json"));
         Request request = new Request.Builder()
