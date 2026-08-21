@@ -35,6 +35,35 @@ class TransportProfileNotifier(private val context: Context) {
         NotificationManagerCompat.from(context).notify((device.device_id + profile.id).hashCode(), notification)
     }
 
+    fun notifyPredictionIfNeeded(device: Device, profile: TransportProfile, response: Map<String, Any>?) {
+        if (response?.get("profile_based") != true || response["prediction"] != "În afara limitelor") return
+
+        val featureAssessment = response["feature_assessment"] as? Map<*, *>
+        val violations = featureAssessment?.mapNotNull { (parameterId, details) ->
+            val values = details as? Map<*, *> ?: return@mapNotNull null
+            if (values["status"]?.toString() != "În afara limitei profilului") return@mapNotNull null
+            val parameter = transportParameters.firstOrNull { it.id == parameterId.toString() }
+                ?: return@mapNotNull null
+            "${parameter.label}: ${values["value"]} ${parameter.unit}"
+        }?.takeIf { it.isNotEmpty() } ?: listOf("Una sau mai multe valori depășesc pragurile profilului.")
+
+        if (!canNotify(profile.id, device.device_id)) return
+        createChannel()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle("Avertizare profil: ${device.name ?: device.device_id}")
+            .setContentText("Situația nu este în limitele profilului selectat.")
+            .setStyle(NotificationCompat.BigTextStyle().bigText(violations.joinToString("\n")))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(context).notify((device.device_id + profile.id).hashCode(), notification)
+    }
+
     private fun canNotify(profileId: String, deviceId: String): Boolean {
         val preferences = context.getSharedPreferences("TransportAlertNotifications", Context.MODE_PRIVATE)
         val key = "$deviceId.$profileId.last_notification"

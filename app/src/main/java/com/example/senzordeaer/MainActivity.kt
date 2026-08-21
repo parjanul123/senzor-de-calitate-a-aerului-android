@@ -605,6 +605,56 @@ private fun AiPredictionCard(title: String, response: Map<String, Any?>) {
     }
 }
 
+private fun applyTransportProfilePrediction(
+    response: Map<String, Any>?,
+    transportProfile: TransportProfile
+): Map<String, Any>? {
+    if (response == null || transportProfile.id == TransportProfileStore.STANDARD_PROFILE_ID) return response
+
+    val inputValues = response["input_values"] as? Map<*, *> ?: return response
+    val parameterAliases = mapOf(
+        "temp" to "temperature",
+        "temperatura" to "temperature",
+        "hum" to "humidity",
+        "umiditate" to "humidity",
+        "presiune" to "pressure",
+        "lux" to "light",
+        "pm2.5" to "pm25",
+        "pm2_5" to "pm25"
+    )
+    val valuesByParameter = inputValues.mapNotNull { (key, value) ->
+        val number = when (value) {
+            is Number -> value.toFloat()
+            else -> value?.toString()?.toFloatOrNull()
+        }
+        val parameterId = key.toString().lowercase().let { parameterAliases[it] ?: it }
+        number?.let { parameterId to it }
+    }.toMap()
+    val evaluatedLimits = transportProfile.limits.mapNotNull { (parameterId, _) ->
+        valuesByParameter[parameterId]?.let { value ->
+            parameterId to transportProfile.isWithinLimit(parameterId, value)
+        }
+    }.toMap()
+    if (evaluatedLimits.isEmpty()) return response
+
+    return response.toMutableMap().apply {
+        put("prediction", if (evaluatedLimits.values.all { it }) "În limite" else "În afara limitelor")
+        put("profile_name", transportProfile.cargoName)
+        put("profile_based", true)
+
+        val featureAssessment = (response["feature_assessment"] as? Map<*, *>)?.toMutableMap()
+        if (featureAssessment != null) {
+            evaluatedLimits.forEach { (parameterId, isWithinLimit) ->
+                val details = featureAssessment[parameterId] as? Map<*, *> ?: return@forEach
+                featureAssessment[parameterId] = details.toMutableMap().apply {
+                    put("status", if (isWithinLimit) "În limite" else "În afara limitei profilului")
+                }
+            }
+            put("feature_assessment", featureAssessment)
+        }
+    }
+}
+
 @Composable
 private fun AiAnomalyCard(title: String, response: Map<String, Any?>) {
     Card(
@@ -710,6 +760,10 @@ fun AiForecastResults(response: Map<String, Any?>) {
 @Composable
 fun AiDashboardScreen(profile: UserProfile?, sessionManager: SessionManager, dbService: SupabaseService, apiService: FastApiService) {
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val transportProfileStore = remember { TransportProfileStore(context) }
+    val transportProfileNotifier = remember { TransportProfileNotifier(context) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     var predictionData by remember { mutableStateOf<Map<String, Any>?>(null) }
     var anomalyData by remember { mutableStateOf<Map<String, Any>?>(null) }
     var selectedPredictionAlgorithm by remember { mutableStateOf("random_forest") }
@@ -726,6 +780,14 @@ fun AiDashboardScreen(profile: UserProfile?, sessionManager: SessionManager, dbS
     val selectedPredictionAlgorithmLabel = predictionAlgorithms
         .first { it.id == selectedPredictionAlgorithm }
         .label
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(scrollState)) {
         Text("Starea aerului", style = MaterialTheme.typography.headlineMedium)
@@ -780,7 +842,13 @@ fun AiDashboardScreen(profile: UserProfile?, sessionManager: SessionManager, dbS
                         anomalyData = null
                         val deviceId = selectedDeviceId(selectedDevice)
                         coroutineScope.launch {
-                            predictionData = apiService.getPrediction(selectedPredictionAlgorithm, deviceId)
+                            val apiResponse = apiService.getPrediction(selectedPredictionAlgorithm, deviceId)
+                            val selectedProfile = deviceId?.let { transportProfileStore.get(it) }
+                            val evaluatedResponse = selectedProfile?.let { applyTransportProfilePrediction(apiResponse, it) }
+                            predictionData = evaluatedResponse
+                            if (selectedDevice != null && selectedProfile != null) {
+                                transportProfileNotifier.notifyPredictionIfNeeded(selectedDevice!!, selectedProfile, evaluatedResponse)
+                            }
                             isPredicting = false
                         }
                     }, enabled = !isLoading && selectedDeviceId(selectedDevice) != null, modifier = Modifier.weight(1f), contentPadding = PaddingValues(0.dp)) { 
