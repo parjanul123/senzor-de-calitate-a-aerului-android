@@ -1,5 +1,6 @@
 package com.example.senzordeaer
 
+import android.util.Log
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -33,15 +34,44 @@ class FastApiService {
 
     private fun encodeQueryParam(value: String): String = URLEncoder.encode(value, "UTF-8")
 
-    suspend fun chatWithAi(message: String): String = withContext(Dispatchers.IO) {
-        val json = gson.toJson(mapOf("message" to message))
+    suspend fun chatWithAi(message: String, deviceId: String? = null): String = withContext(Dispatchers.IO) {
+        val payload = mutableMapOf<String, Any>("message" to message)
+        if (!deviceId.isNullOrBlank()) {
+            payload["device_id"] = deviceId
+        }
+        val json = gson.toJson(payload)
         val request = createPostRequest("/chat", json)
         try {
             client.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string() ?: ""
                 if (!response.isSuccessful) return@withContext "Serverul AI nu a răspuns corect."
-                val result = gson.fromJson(responseBody, Map::class.java)
-                result["response"]?.toString() ?: result["reply"]?.toString() ?: "AI-ul nu are un răspuns."
+                Log.d("FastApiService", "Chat API response: $responseBody")
+
+                val result = try {
+                    gson.fromJson(responseBody, Map::class.java)
+                } catch (_: Exception) {
+                    null
+                }
+
+                if (result == null) {
+                    return@withContext responseBody.ifBlank { "AI-ul nu are un răspuns." }
+                }
+
+                val directMessage = result["response"]?.toString()
+                    ?: result["reply"]?.toString()
+                    ?: result["message"]?.toString()
+                    ?: result["text"]?.toString()
+
+                if (!directMessage.isNullOrBlank()) return@withContext directMessage
+
+                val dataObj = result["data"] as? Map<*, *>
+                val nestedMessage = dataObj?.get("response")?.toString()
+                    ?: dataObj?.get("reply")?.toString()
+                    ?: dataObj?.get("message")?.toString()
+                    ?: dataObj?.get("text")?.toString()
+
+                nestedMessage?.takeIf { it.isNotBlank() }
+                    ?: responseBody.ifBlank { "AI-ul nu are un răspuns." }
             }
         } catch (e: Exception) {
             "Eroare de conexiune la AI."

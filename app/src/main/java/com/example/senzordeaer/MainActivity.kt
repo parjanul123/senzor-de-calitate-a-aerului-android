@@ -273,7 +273,7 @@ fun MainAppScreen(profile: UserProfile?, profileError: String?, sessionManager: 
                         "Adaugă" -> AddNewDeviceScreen(sessionManager, dbService) {
                             selectedItem = "Lista Dispozitive"
                         }
-                        "Chat AI" -> AiChatScreen(fastApiService)
+                        "Chat AI" -> AiChatScreen(profile, sessionManager, dbService, fastApiService)
                         "Dashboard AI" -> AiDashboardScreen(profile, sessionManager, dbService, fastApiService)
                         "Prognoză AI" -> AiForecastScreen(profile, sessionManager, dbService, fastApiService)
                         "Antrenare AI" -> AiTrainingScreen(profile, sessionManager, dbService, fastApiService)
@@ -372,6 +372,17 @@ private fun deviceDisplayName(device: Device): String {
     return id?.let { "$name ($it)" } ?: name
 }
 
+private fun chatWelcomeMessage(): String =
+    "Bună, sunt agentul AeroSenzor. Pentru a continua discuția cu mine, trebuie să alegi un dispozitiv."
+
+private fun chatDevicesMessage(devices: List<Device>): String {
+    if (devices.isEmpty()) {
+        return "Nu am găsit dispozitive asociate contului tău."
+    }
+    val list = devices.joinToString("\n") { device -> "- ${deviceDisplayName(device)}" }
+    return "Dispozitive disponibile:\n$list"
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AiDeviceSelector(
@@ -379,7 +390,9 @@ private fun AiDeviceSelector(
     sessionManager: SessionManager,
     dbService: SupabaseService,
     selectedDevice: Device?,
-    onDeviceSelected: (Device?) -> Unit
+    onDeviceSelected: (Device?) -> Unit,
+    autoSelectFirstDevice: Boolean = true,
+    onDevicesLoaded: ((List<Device>) -> Unit)? = null
 ) {
     var devices by remember { mutableStateOf<List<Device>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
@@ -398,13 +411,17 @@ private fun AiDeviceSelector(
                 dbService.getMyDevices(token, uid)?.toList() ?: emptyList()
             }
             devices = fetchedDevices
+            onDevicesLoaded?.invoke(fetchedDevices)
             val currentDeviceId = selectedDeviceId(selectedDevice)
-            if (currentDeviceId == null || fetchedDevices.none { it.device_id == currentDeviceId }) {
+            if (autoSelectFirstDevice && (currentDeviceId == null || fetchedDevices.none { it.device_id == currentDeviceId })) {
                 onDeviceSelected(fetchedDevices.firstOrNull())
+            } else if (!autoSelectFirstDevice && currentDeviceId != null && fetchedDevices.none { it.device_id == currentDeviceId }) {
+                onDeviceSelected(null)
             }
         } catch (e: Exception) {
             error = "Nu am putut încărca dispozitivele: ${e.message}"
             devices = emptyList()
+            onDevicesLoaded?.invoke(emptyList())
             onDeviceSelected(null)
         } finally {
             isLoading = false
@@ -1148,12 +1165,30 @@ fun AiSettingsScreen(apiService: FastApiService) {
 }
 
 @Composable
-fun AiChatScreen(apiService: FastApiService) {
+fun AiChatScreen(profile: UserProfile?, sessionManager: SessionManager, dbService: SupabaseService, apiService: FastApiService) {
     val coroutineScope = rememberCoroutineScope()
     var inputText by remember { mutableStateOf("") }
     val messages = remember { mutableStateListOf<Pair<String, Boolean>>() }
+    var selectedDevice by remember { mutableStateOf<Device?>(null) }
+    var availableDevices by remember { mutableStateOf<List<Device>>(emptyList()) }
+    var introAdded by remember { mutableStateOf(false) }
+    var devicesMessageAdded by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+
+    LaunchedEffect(introAdded) {
+        if (!introAdded) {
+            messages.add(chatWelcomeMessage() to false)
+            introAdded = true
+        }
+    }
+
+    LaunchedEffect(availableDevices, introAdded, devicesMessageAdded) {
+        if (introAdded && !devicesMessageAdded) {
+            messages.add(chatDevicesMessage(availableDevices) to false)
+            devicesMessageAdded = true
+        }
+    }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -1162,6 +1197,18 @@ fun AiChatScreen(apiService: FastApiService) {
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        AiDeviceSelector(
+            profile = profile,
+            sessionManager = sessionManager,
+            dbService = dbService,
+            selectedDevice = selectedDevice,
+            onDeviceSelected = { selectedDevice = it },
+            autoSelectFirstDevice = false,
+            onDevicesLoaded = { availableDevices = it }
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
         LazyColumn(modifier = Modifier.weight(1f), state = listState) {
             items(messages) { msg ->
                 ChatBubble(text = msg.first, isUser = msg.second)
@@ -1190,13 +1237,13 @@ fun AiChatScreen(apiService: FastApiService) {
                         inputText = ""
                         isLoading = true
                         coroutineScope.launch {
-                            val response = apiService.chatWithAi(userMsg)
+                            val response = apiService.chatWithAi(userMsg, selectedDeviceId(selectedDevice))
                             messages.add(response to false)
                             isLoading = false
                         }
                     }
                 },
-                enabled = !isLoading
+                enabled = !isLoading && selectedDeviceId(selectedDevice) != null
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Trimite", tint = MaterialTheme.colorScheme.primary)
             }
