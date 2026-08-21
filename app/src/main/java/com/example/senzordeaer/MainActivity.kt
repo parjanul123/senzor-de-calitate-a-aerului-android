@@ -8,9 +8,10 @@ import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothAdapter
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -42,6 +43,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.FragmentActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -60,23 +65,25 @@ import no.nordicsemi.android.support.v18.scanner.ScanSettings
 
 data class FoundBleDevice(val address: String, val name: String?, val rssi: Int)
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme {
-                MainContent()
+                MainContent(activity = this@MainActivity)
             }
         }
     }
 }
 
 @Composable
-fun MainContent() {
+fun MainContent(activity: FragmentActivity) {
     val context = LocalContext.current
     val sessionManager = remember { SessionManager(context) }
     
-    var isUserLoggedIn by remember { mutableStateOf(sessionManager.accessToken != null) }
+    var isUserLoggedIn by remember {
+        mutableStateOf(sessionManager.accessToken != null && !sessionManager.isBiometricLoginEnabled)
+    }
     var loggedInProfile by remember { mutableStateOf<UserProfile?>(null) }
     var profileError by remember { mutableStateOf<String?>(null) }
 
@@ -128,6 +135,17 @@ fun MainContent() {
             profile = loggedInProfile, 
             profileError = profileError,
             sessionManager = sessionManager,
+            onEnableBiometricLogin = { activity ->
+                requestBiometricAuthentication(
+                    activity = activity,
+                    title = "Activează amprenta",
+                    subtitle = "Confirmă cu amprenta pentru a activa conectarea biometrică.",
+                    onSuccess = {
+                        sessionManager.setBiometricLoginEnabled(true)
+                        Toast.makeText(context, "Conectarea cu amprentă a fost activată.", Toast.LENGTH_LONG).show()
+                    }
+                )
+            },
             onLogout = {
                 sessionManager.clear()
                 loggedInProfile = null
@@ -148,7 +166,15 @@ fun MainContent() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainAppScreen(profile: UserProfile?, profileError: String?, sessionManager: SessionManager, onLogout: () -> Unit) {
+fun MainAppScreen(
+    profile: UserProfile?,
+    profileError: String?,
+    sessionManager: SessionManager,
+    onEnableBiometricLogin: (FragmentActivity) -> Unit,
+    onLogout: () -> Unit
+) {
+    val context = LocalContext.current
+    val activity = context as? FragmentActivity
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var selectedItem by remember { mutableStateOf("Acasă") }
@@ -197,6 +223,16 @@ fun MainAppScreen(profile: UserProfile?, profileError: String?, sessionManager: 
                     }
                 }
                 
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Default.Fingerprint, contentDescription = "Activează amprenta") },
+                    label = { Text("Activează amprenta") },
+                    selected = false,
+                    onClick = {
+                        scope.launch { drawerState.close() }
+                        if (activity != null) onEnableBiometricLogin(activity)
+                    },
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                )
                 NavigationDrawerItem(
                     icon = { Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "Deconectare") },
                     label = { Text("Deconectare") },
@@ -2028,14 +2064,17 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
     val authClient = remember { SupabaseAuthClient() }
     val dbService = remember { SupabaseService() }
     val sessionManager = remember { SessionManager(context) }
+    val activity = context as? FragmentActivity
     var isLoginMode by remember { mutableStateOf(true) }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text(text = if (isLoginMode) "Logare" else "Cont Nou", style = MaterialTheme.typography.headlineMedium)
+        Text(text = if (isLoginMode) "Conectează-te" else "Cont Nou", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(24.dp))
+        Text("Conectează-te cu email și parolă", style = MaterialTheme.typography.titleMedium)
+        Spacer(modifier = Modifier.height(12.dp))
         OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Parolă") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(24.dp))
@@ -2061,6 +2100,76 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
         }, modifier = Modifier.fillMaxWidth()) {
             if (isLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp)) else Text("Continuă")
         }
+        if (isLoginMode && sessionManager.isBiometricLoginEnabled() && sessionManager.accessToken != null && activity != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("sau", style = MaterialTheme.typography.bodyMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    requestBiometricAuthentication(
+                        activity = activity,
+                        title = "Conectează-te cu amprenta",
+                        subtitle = "Folosește amprenta pentru a continua.",
+                        onSuccess = {
+                            coroutineScope.launch(Dispatchers.IO) {
+                                val token = sessionManager.accessToken
+                                val userId = sessionManager.userId
+                                if (token == null || userId == null) return@launch
+                                try {
+                                    val profile = dbService.getUserProfile(token, userId)
+                                    withContext(Dispatchers.Main) { onLoginSuccess(profile, null) }
+                                } catch (error: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        Toast.makeText(context, "Sesiunea nu mai este validă. Conectează-te cu email și parolă.", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                            }
+                        }
+                    )
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Fingerprint, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Folosește amprenta")
+            }
+        }
         TextButton(onClick = { isLoginMode = !isLoginMode }) { Text(if (isLoginMode) "Creează cont" else "Am deja cont") }
     }
+}
+
+private fun requestBiometricAuthentication(
+    activity: FragmentActivity,
+    title: String,
+    subtitle: String,
+    onSuccess: () -> Unit
+) {
+    val biometricManager = BiometricManager.from(activity)
+    if (biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) != BiometricManager.BIOMETRIC_SUCCESS) {
+        Toast.makeText(activity, "Înregistrează mai întâi o amprentă în setările telefonului.", Toast.LENGTH_LONG).show()
+        val enrollmentIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent(Settings.ACTION_BIOMETRIC_ENROLL).putExtra(
+                Settings.EXTRA_BIOMETRIC_AUTHENTICATORS_ALLOWED,
+                BiometricManager.Authenticators.BIOMETRIC_STRONG
+            )
+        } else {
+            Intent(Settings.ACTION_SECURITY_SETTINGS)
+        }
+        activity.startActivity(enrollmentIntent)
+        return
+    }
+
+    val executor = ContextCompat.getMainExecutor(activity)
+    val prompt = BiometricPrompt(activity, executor, object : BiometricPrompt.AuthenticationCallback() {
+        override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+            super.onAuthenticationSucceeded(result)
+            onSuccess()
+        }
+    })
+    val promptInfo = BiometricPrompt.PromptInfo.Builder()
+        .setTitle(title)
+        .setSubtitle(subtitle)
+        .setNegativeButtonText("Renunță")
+        .build()
+    prompt.authenticate(promptInfo)
 }

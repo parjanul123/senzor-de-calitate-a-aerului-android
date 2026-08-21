@@ -29,6 +29,14 @@ public class SessionManager {
     public String getUserId() {
         return prefs.getString("user_id", null);
     }
+
+    public boolean isBiometricLoginEnabled() {
+        return prefs.getBoolean("biometric_login_enabled", false);
+    }
+
+    public void setBiometricLoginEnabled(boolean enabled) {
+        prefs.edit().putBoolean("biometric_login_enabled", enabled).apply();
+    }
     
     public void clear() {
         prefs.edit().clear().apply();
