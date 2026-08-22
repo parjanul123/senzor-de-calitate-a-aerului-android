@@ -1506,6 +1506,7 @@ fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbSe
     var showLocationDialog by remember { mutableStateOf(false) }
     var showTransportProfileList by remember { mutableStateOf(false) }
     var showTransportProfileDialog by remember { mutableStateOf(false) }
+    var profileBeingEdited by remember { mutableStateOf<TransportProfile?>(null) }
     var profileRevision by remember { mutableIntStateOf(0) }
     var newLocation by remember { mutableStateOf(device.location ?: "") }
     var isUpdating by remember { mutableStateOf(false) }
@@ -1623,8 +1624,14 @@ fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbSe
                     }
                 }
             },
+            onEdit = { profile ->
+                showTransportProfileList = false
+                profileBeingEdited = profile
+                showTransportProfileDialog = true
+            },
             onCreateProfile = {
                 showTransportProfileList = false
+                profileBeingEdited = null
                 showTransportProfileDialog = true
             }
         )
@@ -1632,6 +1639,7 @@ fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbSe
 
     if (showTransportProfileDialog) {
         TransportProfileDialog(
+            initialProfile = profileBeingEdited,
             onDismiss = { showTransportProfileDialog = false },
             onSave = { profile ->
                 val savedProfile = transportProfileStore.save(profile)
@@ -1651,6 +1659,7 @@ private fun TransportProfileListDialog(
     onDismiss: () -> Unit,
     onSelect: (String) -> Unit,
     onDelete: (String) -> Unit,
+    onEdit: (TransportProfile) -> Unit,
     onCreateProfile: () -> Unit
 ) {
     AlertDialog(
@@ -1674,6 +1683,9 @@ private fun TransportProfileListDialog(
                             Text(if (profile.id == selectedProfileId) "${profile.cargoName} (activ)" else profile.cargoName)
                         }
                         if (profile.id != TransportProfileStore.STANDARD_PROFILE_ID) {
+                            IconButton(onClick = { onEdit(profile) }) {
+                                Icon(Icons.Default.Edit, contentDescription = "Editează profilul ${profile.cargoName}")
+                            }
                             IconButton(onClick = { onDelete(profile.id) }) {
                                 Icon(Icons.Default.Delete, contentDescription = "Șterge profilul ${profile.cargoName}")
                             }
@@ -1689,11 +1701,16 @@ private fun TransportProfileListDialog(
 
 @Composable
 private fun TransportProfileDialog(
+    initialProfile: TransportProfile?,
     onDismiss: () -> Unit,
     onSave: (TransportProfile) -> Unit
 ) {
-    var cargoName by remember { mutableStateOf("") }
-    val limits = remember { mutableStateMapOf<String, ParameterLimit>() }
+    var cargoName by remember { mutableStateOf(initialProfile?.cargoName ?: "") }
+    val limits = remember {
+        mutableStateMapOf<String, ParameterLimit>().apply {
+            initialProfile?.limits?.forEach { (parameterId, limit) -> this[parameterId] = limit }
+        }
+    }
     var selectedParameter by remember { mutableStateOf(transportParameters.first()) }
     var showParameterMenu by remember { mutableStateOf(false) }
     var minimumValue by remember { mutableStateOf("") }
@@ -1729,8 +1746,8 @@ private fun TransportProfileDialog(
                         }
                     }
                 }
-                OutlinedTextField(minimumValue, { minimumValue = it }, label = { Text("Valoare minimă") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
-                OutlinedTextField(maximumValue, { maximumValue = it }, label = { Text("Valoare maximă") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+                OutlinedTextField(minimumValue, { minimumValue = it }, label = { Text("Valoare minimă") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), singleLine = true)
+                OutlinedTextField(maximumValue, { maximumValue = it }, label = { Text("Valoare maximă") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), singleLine = true)
                 OutlinedButton(onClick = {
                     val minimum = minimumValue.replace(',', '.').toFloatOrNull()
                     val maximum = maximumValue.replace(',', '.').toFloatOrNull()
@@ -1761,7 +1778,7 @@ private fun TransportProfileDialog(
                     else -> null
                 }
                 if (validationError == null) {
-                    onSave(TransportProfile("", cargoName.trim(), limits.toMap()))
+                    onSave(TransportProfile(initialProfile?.id ?: "", cargoName.trim(), limits.toMap()))
                 }
             }) { Text("Salvează") }
         },
