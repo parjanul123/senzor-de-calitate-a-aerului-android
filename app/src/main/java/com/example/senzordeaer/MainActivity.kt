@@ -2468,7 +2468,7 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
         }, modifier = Modifier.fillMaxWidth()) {
             if (isLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp)) else Text("Continuă")
         }
-        if (isLoginMode && sessionManager.isBiometricLoginEnabled() && sessionManager.accessToken != null && activity != null) {
+        if (isLoginMode && sessionManager.isBiometricLoginEnabled() && sessionManager.refreshToken != null && sessionManager.userId != null && activity != null) {
             Spacer(modifier = Modifier.height(16.dp))
             Text("sau", style = MaterialTheme.typography.bodyMedium)
             Spacer(modifier = Modifier.height(8.dp))
