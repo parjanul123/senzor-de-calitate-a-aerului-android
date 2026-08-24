@@ -13,10 +13,8 @@ import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 class FastApiService {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
+    private val client = NetworkSecurity.hardenedClientBuilder()
         .readTimeout(75, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
         .callTimeout(90, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .build()

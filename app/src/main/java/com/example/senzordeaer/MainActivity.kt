@@ -15,8 +15,14 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -72,8 +78,21 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         notificationDeviceId.value = intent.getStringExtra(OPEN_DEVICE_ID_EXTRA)
         setContent {
-            MaterialTheme {
-                MainContent(activity = this@MainActivity, openDeviceId = notificationDeviceId.value)
+            val context = LocalContext.current
+            val themePreferences = remember { ThemePreferences(context) }
+            val systemDark = isSystemInDarkTheme()
+            var isDarkMode by remember { mutableStateOf(themePreferences.getIsDarkMode(systemDark)) }
+
+            SenzorDeAerTheme(darkTheme = isDarkMode) {
+                MainContent(
+                    activity = this@MainActivity,
+                    openDeviceId = notificationDeviceId.value,
+                    isDarkMode = isDarkMode,
+                    onToggleDarkMode = {
+                        isDarkMode = !isDarkMode
+                        themePreferences.setIsDarkMode(isDarkMode)
+                    }
+                )
             }
         }
     }
@@ -91,9 +110,15 @@ class MainActivity : FragmentActivity() {
 }
 
 @Composable
-fun MainContent(activity: FragmentActivity, openDeviceId: String? = null) {
+fun MainContent(
+    activity: FragmentActivity,
+    openDeviceId: String? = null,
+    isDarkMode: Boolean = false,
+    onToggleDarkMode: () -> Unit = {}
+) {
     val context = LocalContext.current
     val sessionManager = remember { SessionManager(context) }
+    val tokenManager = remember { TokenManager(sessionManager) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     
     var isUserLoggedIn by remember {
@@ -110,9 +135,9 @@ fun MainContent(activity: FragmentActivity, openDeviceId: String? = null) {
             ) {
                 notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
-            val token = sessionManager.accessToken
-            val refresh = sessionManager.refreshToken
             val uid = sessionManager.userId
+            val token = withContext(Dispatchers.IO) { tokenManager.getValidAccessToken() }
+            val refresh = sessionManager.refreshToken
             
             if (token != null && uid != null) {
                 try {
@@ -158,6 +183,8 @@ fun MainContent(activity: FragmentActivity, openDeviceId: String? = null) {
             profile = loggedInProfile, 
             profileError = profileError,
             sessionManager = sessionManager,
+            isDarkMode = isDarkMode,
+            onToggleDarkMode = onToggleDarkMode,
             onEnableBiometricLogin = { activity ->
                 requestBiometricAuthentication(
                     activity = activity,
@@ -195,6 +222,8 @@ fun MainAppScreen(
     profile: UserProfile?,
     profileError: String?,
     sessionManager: SessionManager,
+    isDarkMode: Boolean,
+    onToggleDarkMode: () -> Unit,
     onEnableBiometricLogin: (FragmentActivity) -> Unit,
     onLogout: () -> Unit,
     openDeviceId: String? = null
@@ -243,6 +272,7 @@ fun MainAppScreen(
                     Triple("Prognoză AI", Icons.Default.Info, "Prognoză AI"),
                     Triple("Antrenare AI", Icons.Default.Build, "Antrenare Model"),
                     Triple("Status AI", Icons.Default.Settings, "Status Servicii AI"),
+                    Triple("Setări", Icons.Default.Tune, "Setări"),
                     Triple("QR Login", Icons.Default.Share, "Conectare Website")
                 )
 
@@ -340,7 +370,12 @@ fun MainAppScreen(
                     )
                 } 
                 else {
-                    when (selectedItem) {
+                    AnimatedContent(
+                        targetState = selectedItem,
+                        label = "screenSwitch",
+                        transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(150)) }
+                    ) { currentItem ->
+                    when (currentItem) {
                         "Acasă" -> HomeScreenContent(profile, profileError, onLogout)
                         "Lista Dispozitive" -> DevicesListScreen(profile, sessionManager, dbService) { clickedDevice ->
                             selectedDbDevice = clickedDevice
@@ -353,12 +388,55 @@ fun MainAppScreen(
                         "Prognoză AI" -> AiForecastScreen(profile, sessionManager, dbService, fastApiService)
                         "Antrenare AI" -> AiTrainingScreen(profile, sessionManager, dbService, fastApiService)
                         "Status AI" -> AiSettingsScreen(fastApiService)
+                        "Setări" -> SettingsScreen(
+                            isDarkMode = isDarkMode,
+                            onToggleDarkMode = onToggleDarkMode
+                        )
                         "QR Login" -> QRScannerScreen(
                             userId = sessionManager.userId ?: "",
                             onNavigateBack = { selectedItem = "Acasă" }
                         )
                     }
+                    }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsScreen(isDarkMode: Boolean, onToggleDarkMode: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text("Setări", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AnimatedContent(targetState = isDarkMode, label = "themeIcon") { dark ->
+                        Icon(
+                            if (dark) Icons.Default.DarkMode else Icons.Default.LightMode,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text("Mod întunecat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (isDarkMode) "Activat" else "Dezactivat",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Switch(checked = isDarkMode, onCheckedChange = { onToggleDarkMode() })
             }
         }
     }
@@ -2529,7 +2607,8 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
                         val token = response.get("access_token").asString
                         val refreshToken = response.get("refresh_token").asString
                         val uid = response.getAsJsonObject("user").get("id").asString
-                        sessionManager.saveSession(token, refreshToken, uid)
+                        val expiresIn = response.get("expires_in")?.asLong ?: 3600L
+                        sessionManager.saveSession(token, refreshToken, uid, expiresIn)
                         val profile = dbService.getUserProfile(token, uid)
                         withContext(Dispatchers.Main) { onLoginSuccess(profile, null) }
                     } else {
@@ -2567,7 +2646,8 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
                                     val refreshedSession = authClient.refreshSession(refreshToken)
                                     val token = refreshedSession.get("access_token").asString
                                     val newRefreshToken = refreshedSession.get("refresh_token").asString
-                                    sessionManager.saveSession(token, newRefreshToken, userId)
+                                    val expiresIn = refreshedSession.get("expires_in")?.asLong ?: 3600L
+                                    sessionManager.saveSession(token, newRefreshToken, userId, expiresIn)
                                     val profile = dbService.getUserProfile(token, userId)
                                     withContext(Dispatchers.Main) { onLoginSuccess(profile, null) }
                                 } catch (error: Exception) {

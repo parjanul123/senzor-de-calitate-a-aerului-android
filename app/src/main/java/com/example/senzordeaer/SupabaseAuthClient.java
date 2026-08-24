@@ -8,7 +8,7 @@ import java.io.IOException;
 public class SupabaseAuthClient {
     private static final String AUTH_URL = "https://eakzxbfcwbgfxfujzote.supabase.co/auth/v1/";
     private static final String API_KEY = "sb_publishable_ofI6pPkeb2csAsw_ZqhCng_d3ADhRZU";
-    private final OkHttpClient client = new OkHttpClient();
+    private final OkHttpClient client = NetworkSecurity.INSTANCE.hardenedClientBuilder().build();
     private final Gson gson = new Gson();
 
     public JsonObject signUp(String email, String password) throws IOException {

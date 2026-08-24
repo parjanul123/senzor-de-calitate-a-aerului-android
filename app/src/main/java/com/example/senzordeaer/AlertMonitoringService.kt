@@ -37,13 +37,14 @@ class AlertMonitoringService : Service() {
 
     private suspend fun monitorDevices() {
         val sessionManager = SessionManager(applicationContext)
+        val tokenManager = TokenManager(sessionManager)
         val dbService = SupabaseService()
         val profileStore = TransportProfileStore(applicationContext)
         val notifier = TransportProfileNotifier(applicationContext)
 
         while (serviceScope.isActive) {
-            val token = sessionManager.accessToken
             val userId = sessionManager.userId
+            val token = tokenManager.getValidAccessToken()
             if (token.isNullOrBlank() || userId.isNullOrBlank()) {
                 stopSelf()
                 return

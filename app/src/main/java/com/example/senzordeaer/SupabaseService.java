@@ -10,7 +10,7 @@ import java.io.IOException;
 public class SupabaseService {
     private static final String BASE_URL = "https://eakzxbfcwbgfxfujzote.supabase.co/rest/v1/";
     private static final String API_KEY = "sb_publishable_ofI6pPkeb2csAsw_ZqhCng_d3ADhRZU";
-    private final OkHttpClient client = new OkHttpClient();
+    private final OkHttpClient client = NetworkSecurity.INSTANCE.hardenedClientBuilder().build();
     private final Gson gson = new Gson();
 
     public void createUserProfile(String accessToken, String userId, String username, String email) throws IOException {
