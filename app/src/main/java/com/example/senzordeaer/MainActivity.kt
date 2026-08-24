@@ -293,16 +293,6 @@ fun MainAppScreen(
                 }
                 
                 NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.Fingerprint, contentDescription = "Activează amprenta") },
-                    label = { Text("Activează amprenta") },
-                    selected = false,
-                    onClick = {
-                        scope.launch { drawerState.close() }
-                        if (activity != null) onEnableBiometricLogin(activity)
-                    },
-                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
-                )
-                NavigationDrawerItem(
                     icon = { Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = "Deconectare") },
                     label = { Text("Deconectare") },
                     selected = false,
@@ -390,7 +380,8 @@ fun MainAppScreen(
                         "Status AI" -> AiSettingsScreen(fastApiService)
                         "Setări" -> SettingsScreen(
                             isDarkMode = isDarkMode,
-                            onToggleDarkMode = onToggleDarkMode
+                            onToggleDarkMode = onToggleDarkMode,
+                            onEnableBiometricLogin = { activity?.let { onEnableBiometricLogin(it) } }
                         )
                         "QR Login" -> QRScannerScreen(
                             userId = sessionManager.userId ?: "",
@@ -405,7 +396,7 @@ fun MainAppScreen(
 }
 
 @Composable
-fun SettingsScreen(isDarkMode: Boolean, onToggleDarkMode: () -> Unit) {
+fun SettingsScreen(isDarkMode: Boolean, onToggleDarkMode: () -> Unit, onEnableBiometricLogin: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Setări", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
 
@@ -437,6 +428,31 @@ fun SettingsScreen(isDarkMode: Boolean, onToggleDarkMode: () -> Unit) {
                     }
                 }
                 Switch(checked = isDarkMode, onCheckedChange = { onToggleDarkMode() })
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text("Conectare cu amprenta", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(
+                            "Activează pentru a te conecta rapid cu amprenta",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                TextButton(onClick = onEnableBiometricLogin) { Text("Activează") }
             }
         }
     }
