@@ -1876,6 +1876,7 @@ private fun TransportProfileDialog(
     onDismiss: () -> Unit,
     onSave: (TransportProfile) -> Unit
 ) {
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var cargoName by remember { mutableStateOf(initialProfile?.cargoName ?: "") }
     val limits = remember {
@@ -1889,27 +1890,34 @@ private fun TransportProfileDialog(
     var maximumValue by remember { mutableStateOf("") }
     var validationError by remember { mutableStateOf<String?>(null) }
     var isFetchingAiSuggestion by remember { mutableStateOf(false) }
-    var aiSuggestion by remember { mutableStateOf<String?>(null) }
+    // Sugestia AI e ținută per parametru, ca să nu se piardă la schimbarea selecției.
+    val aiSuggestionsByParameter = remember { mutableStateMapOf<String, String>() }
     val nameEntered = cargoName.isNotBlank()
 
-    fun requestAiSuggestion() {
+    fun requestAiSuggestion(parameter: TransportParameter) {
         if (!nameEntered || isFetchingAiSuggestion) return
         isFetchingAiSuggestion = true
-        aiSuggestion = null
         coroutineScope.launch(Dispatchers.IO) {
-            val prompt = "Recomandă praguri optime (valoare minimă și maximă) de temperatură (°C), umiditate (%), " +
-                "CO2 (ppm), PM2.5 (µg/m³) și PM10 (µg/m³) pentru transportul mărfii \"${cargoName.trim()}\". " +
-                "Răspunde scurt, sub formă de listă, cu valori numerice pentru fiecare parametru relevant."
+            val prompt = "Care este intervalul recomandat (valoare minimă și maximă) de ${parameter.label} " +
+                "(${parameter.unit}) pentru transportul/depozitarea mărfii \"${cargoName.trim()}\"? " +
+                "Bazează-te pe standarde cunoscute de logistică pentru acest tip de marfă. " +
+                "Răspunde scurt, cu un interval numeric și o scurtă motivație."
             val result = try {
                 fastApiService.chatWithAi(prompt)
             } catch (e: Exception) {
                 "Sugestiile AI nu sunt disponibile momentan: ${e.message}"
             }
             withContext(Dispatchers.Main) {
-                aiSuggestion = result
+                aiSuggestionsByParameter[parameter.id] = result
                 isFetchingAiSuggestion = false
             }
         }
+    }
+
+    fun openGoogleSearchFor(parameter: TransportParameter) {
+        val query = "prag recomandat ${parameter.label} transport ${cargoName.trim()}"
+        val uri = android.net.Uri.parse("https://www.google.com/search?q=" + android.net.Uri.encode(query))
+        context.startActivity(Intent(Intent.ACTION_VIEW, uri))
     }
 
     AlertDialog(
@@ -1933,26 +1941,6 @@ private fun TransportProfileDialog(
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
                     )
-                } else {
-                    OutlinedButton(
-                        onClick = { requestAiSuggestion() },
-                        enabled = !isFetchingAiSuggestion,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (isFetchingAiSuggestion) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text("Cere sugestii AI pentru \"${cargoName.trim()}\"")
-                    }
-                    aiSuggestion?.let { suggestion ->
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                        ) {
-                            Text(suggestion, modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
                 }
                 Text("Adaugă prag pentru un parametru", fontWeight = FontWeight.Bold)
                 Box {
@@ -1970,6 +1958,34 @@ private fun TransportProfileDialog(
                                     showParameterMenu = false
                                 }
                             )
+                        }
+                    }
+                }
+                if (nameEntered) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { requestAiSuggestion(selectedParameter) },
+                            enabled = !isFetchingAiSuggestion,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            if (isFetchingAiSuggestion) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text("Sugestie AI")
+                        }
+                        OutlinedButton(onClick = { openGoogleSearchFor(selectedParameter) }, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Caută pe Google")
+                        }
+                    }
+                    aiSuggestionsByParameter[selectedParameter.id]?.let { suggestion ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        ) {
+                            Text(suggestion, modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
