@@ -362,7 +362,6 @@ fun MainAppScreen(
                         device = selectedDbDevice!!, 
                         sessionManager = sessionManager, 
                         dbService = dbService,
-                        fastApiService = fastApiService,
                         onOpenWifiSetup = { showWifiProvisioningForDevice = selectedDbDevice },
                         onOpenMeasurements = { showMeasurementsForDevice = selectedDbDevice },
                         onDeviceUpdated = { updatedDevice -> selectedDbDevice = updatedDevice }
@@ -1668,7 +1667,7 @@ fun DevicesListScreen(profile: UserProfile?, sessionManager: SessionManager, dbS
 }
 
 @Composable
-fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbService: SupabaseService, fastApiService: FastApiService, onOpenWifiSetup: () -> Unit, onOpenMeasurements: () -> Unit, onDeviceUpdated: (Device) -> Unit) {
+fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbService: SupabaseService, onOpenWifiSetup: () -> Unit, onOpenMeasurements: () -> Unit, onDeviceUpdated: (Device) -> Unit) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val transportProfileStore = remember { TransportProfileStore(context) }
@@ -1809,7 +1808,6 @@ fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbSe
     if (showTransportProfileDialog) {
         TransportProfileDialog(
             initialProfile = profileBeingEdited,
-            fastApiService = fastApiService,
             onDismiss = { showTransportProfileDialog = false },
             onSave = { profile ->
                 val savedProfile = transportProfileStore.save(profile)
@@ -1869,14 +1867,61 @@ private fun TransportProfileListDialog(
     )
 }
 
+private enum class CargoOperationMode(val label: String) {
+    GENERAL("General"),
+    DEPOZITARE("Depozitare"),
+    TRANSPORT("Transport")
+}
+
+/**
+ * Sugestie locală (euristică) de praguri pe baza numelui mărfii și a modului de operare.
+ * Nu interoghează internetul; recunoaște câteva categorii comune de marfă după cuvinte cheie
+ * și altfel folosește un interval general sigur. CO2/PM2.5/PM10/VOC variază după modul de operare.
+ */
+private fun generateAiThresholdSuggestions(
+    cargoName: String,
+    mode: CargoOperationMode
+): Pair<Map<String, ParameterLimit>, String> {
+    val name = cargoName.trim().lowercase()
+    data class TempHumidity(val tempMin: Float, val tempMax: Float, val humMin: Float, val humMax: Float, val category: String)
+
+    val categories = listOf(
+        Triple(listOf("lapte", "lactate", "branz", "iaurt", "unt"), TempHumidity(2f, 8f, 40f, 70f, "produse lactate"), Unit),
+        Triple(listOf("carne", "pui", "porc", "vita", "vită"), TempHumidity(-2f, 4f, 80f, 95f, "carne proaspătă"), Unit),
+        Triple(listOf("peste", "pește", "fish"), TempHumidity(-2f, 2f, 85f, 95f, "pește/fructe de mare"), Unit),
+        Triple(listOf("flor", "plant"), TempHumidity(2f, 8f, 70f, 90f, "flori/plante"), Unit),
+        Triple(listOf("electron", "componente"), TempHumidity(10f, 35f, 20f, 60f, "electronice"), Unit),
+        Triple(listOf("medicament", "farma", "vaccin"), TempHumidity(2f, 8f, 35f, 65f, "produse farmaceutice"), Unit),
+        Triple(listOf("legum", "fruct", "mer", "banan"), TempHumidity(4f, 12f, 85f, 95f, "legume/fructe"), Unit)
+    )
+    val matched = categories.firstOrNull { (keywords, _, _) -> keywords.any { name.contains(it) } }
+    val thResult = matched?.second ?: TempHumidity(15f, 30f, 30f, 70f, "marfă generală")
+
+    val (co2Min, co2Max, pm25Max, pm10Max, vocMax) = when (mode) {
+        CargoOperationMode.GENERAL -> listOf(400f, 1000f, 15f, 50f, 250f)
+        CargoOperationMode.DEPOZITARE -> listOf(400f, 800f, 12f, 40f, 200f)
+        CargoOperationMode.TRANSPORT -> listOf(350f, 1300f, 25f, 75f, 350f)
+    }
+
+    val limits = mapOf(
+        "temperature" to ParameterLimit(thResult.tempMin, thResult.tempMax),
+        "humidity" to ParameterLimit(thResult.humMin, thResult.humMax),
+        "co2" to ParameterLimit(co2Min, co2Max),
+        "pm25" to ParameterLimit(0f, pm25Max),
+        "pm10" to ParameterLimit(0f, pm10Max),
+        "voc" to ParameterLimit(0f, vocMax)
+    )
+    val observation = "Sugestie AI bazată pe numele profilului \"${cargoName.trim()}\" (categorie: ${thResult.category}). " +
+        "Mod operare: ${mode.label.lowercase()}."
+    return limits to observation
+}
+
 @Composable
 private fun TransportProfileDialog(
     initialProfile: TransportProfile?,
-    fastApiService: FastApiService,
     onDismiss: () -> Unit,
     onSave: (TransportProfile) -> Unit
 ) {
-    val coroutineScope = rememberCoroutineScope()
     var cargoName by remember { mutableStateOf(initialProfile?.cargoName ?: "") }
     val limits = remember {
         mutableStateMapOf<String, ParameterLimit>().apply {
@@ -1888,70 +1933,48 @@ private fun TransportProfileDialog(
     var minimumValue by remember { mutableStateOf("") }
     var maximumValue by remember { mutableStateOf("") }
     var validationError by remember { mutableStateOf<String?>(null) }
-    var isFetchingAiSuggestion by remember { mutableStateOf(false) }
-    // Sugestia AI e ținută per parametru, ca să nu se piardă la schimbarea selecției.
-    val aiSuggestionsByParameter = remember { mutableStateMapOf<String, String>() }
-    var cargoUsageContext by remember { mutableStateOf("") }
-    var showUsageContextDialog by remember { mutableStateOf(false) }
-    var pendingSuggestionParameter by remember { mutableStateOf<TransportParameter?>(null) }
+    var showModeDialog by remember { mutableStateOf(false) }
+    var selectedMode by remember { mutableStateOf(CargoOperationMode.TRANSPORT) }
+    var aiObservation by remember { mutableStateOf<String?>(null) }
     val nameEntered = cargoName.isNotBlank()
 
-    fun fetchAiSuggestion(parameter: TransportParameter) {
-        isFetchingAiSuggestion = true
-        coroutineScope.launch(Dispatchers.IO) {
-            val usageInfo = cargoUsageContext.trim().takeIf { it.isNotBlank() }?.let { " de tip \"$it\"" }.orEmpty()
-            val prompt = "Care este intervalul recomandat (valoare minimă și maximă) de ${parameter.label} " +
-                "(${parameter.unit}) pentru transportul/depozitarea mărfii \"${cargoName.trim()}\"$usageInfo? " +
-                "Bazează-te pe standarde cunoscute de logistică pentru acest tip de marfă. " +
-                "Răspunde scurt, cu un interval numeric și o scurtă motivație."
-            val result = try {
-                fastApiService.chatWithAi(prompt)
-            } catch (e: Exception) {
-                "Sugestiile AI nu sunt disponibile momentan: ${e.message}"
-            }
-            withContext(Dispatchers.Main) {
-                aiSuggestionsByParameter[parameter.id] = result
-                isFetchingAiSuggestion = false
-            }
-        }
-    }
-
-    // Prima dată cerem tipul de utilizare a mărfii, apoi folosim contextul la fiecare sugestie ulterioară.
-    fun requestAiSuggestion(parameter: TransportParameter) {
-        if (!nameEntered || isFetchingAiSuggestion) return
-        if (cargoUsageContext.isBlank()) {
-            pendingSuggestionParameter = parameter
-            showUsageContextDialog = true
-            return
-        }
-        fetchAiSuggestion(parameter)
-    }
-
-    if (showUsageContextDialog) {
-        var draftUsage by remember { mutableStateOf(cargoUsageContext) }
+    if (showModeDialog) {
+        var showModeMenu by remember { mutableStateOf(false) }
         AlertDialog(
-            onDismissRequest = { showUsageContextDialog = false },
-            title = { Text("Ce tip de marfă este?") },
+            onDismissRequest = { showModeDialog = false },
+            title = { Text("Pentru ce să caut mai exact?") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Ex: alimentar, electronic, farmaceutic, floral. Ne ajută să dăm o sugestie mai potrivită.")
-                    OutlinedTextField(
-                        value = draftUsage,
-                        onValueChange = { draftUsage = it },
-                        label = { Text("Tip de marfă") },
-                        singleLine = true
+                    Text("Ce vrei să faci?", fontWeight = FontWeight.Bold)
+                    Box {
+                        OutlinedButton(onClick = { showModeMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(selectedMode.label)
+                        }
+                        DropdownMenu(expanded = showModeMenu, onDismissRequest = { showModeMenu = false }) {
+                            CargoOperationMode.entries.forEach { mode ->
+                                DropdownMenuItem(text = { Text(mode.label) }, onClick = {
+                                    selectedMode = mode
+                                    showModeMenu = false
+                                })
+                            }
+                        }
+                    }
+                    Text(
+                        "Dacă lași gol, AI folosește doar numele profilului.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             },
             confirmButton = {
                 Button(onClick = {
-                    cargoUsageContext = draftUsage
-                    showUsageContextDialog = false
-                    pendingSuggestionParameter?.let { fetchAiSuggestion(it) }
-                    pendingSuggestionParameter = null
-                }) { Text("Continuă") }
+                    val (suggestedLimits, observation) = generateAiThresholdSuggestions(cargoName, selectedMode)
+                    suggestedLimits.forEach { (parameterId, limit) -> limits[parameterId] = limit }
+                    aiObservation = observation
+                    showModeDialog = false
+                }) { Text("Generează sugestii") }
             },
-            dismissButton = { TextButton(onClick = { showUsageContextDialog = false }) { Text("Anulare") } }
+            dismissButton = { TextButton(onClick = { showModeDialog = false }) { Text("Anulează") } }
         )
     }
 
@@ -1976,6 +1999,10 @@ private fun TransportProfileDialog(
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall
                     )
+                } else {
+                    OutlinedButton(onClick = { showModeDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Aplică sugestii AI")
+                    }
                 }
                 Text("Adaugă prag pentru un parametru", fontWeight = FontWeight.Bold)
                 Box {
@@ -1993,27 +2020,6 @@ private fun TransportProfileDialog(
                                     showParameterMenu = false
                                 }
                             )
-                        }
-                    }
-                }
-                if (nameEntered) {
-                    OutlinedButton(
-                        onClick = { requestAiSuggestion(selectedParameter) },
-                        enabled = !isFetchingAiSuggestion,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (isFetchingAiSuggestion) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text("Sugestie AI pentru ${selectedParameter.label}")
-                    }
-                    aiSuggestionsByParameter[selectedParameter.id]?.let { suggestion ->
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                        ) {
-                            Text(suggestion, modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
@@ -2039,6 +2045,15 @@ private fun TransportProfileDialog(
                     Text("${parameter.label}: ${limitLabel(limit, parameter.unit)}")
                 }
                 validationError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                aiObservation?.let { observation ->
+                    Text("Observații", fontWeight = FontWeight.Bold)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                    ) {
+                        Text(observation, modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
             }
         },
         confirmButton = {
