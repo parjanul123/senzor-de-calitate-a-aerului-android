@@ -635,12 +635,31 @@ private fun AiPredictionCard(title: String, response: Map<String, Any?>) {
                         val values = details as? Map<*, *> ?: return@mapNotNull null
                         val value = values["value"]
                         val unit = values["unit"]?.toString().orEmpty()
-                        val status = values["status"]?.toString().orEmpty()
+                        val status = climateAwareFeatureStatus(name.toString(), value, values["status"]?.toString().orEmpty())
                         name.toString() to "${formatAiVal(value)} $unit - $status"
                     }
                 )
             }
         }
+    }
+}
+
+// Temperatura și umiditatea nu pot fi "poluate"; le raportăm doar ca scăzut/potrivit/ridicat.
+private fun climateAwareFeatureStatus(featureName: String, value: Any?, fallbackStatus: String): String {
+    val normalized = featureName.trim().lowercase()
+    val numericValue = (value as? Number)?.toDouble() ?: value?.toString()?.toDoubleOrNull()
+    return when {
+        normalized.contains("temp") && numericValue != null -> when {
+            numericValue < 18 -> "Scăzut"
+            numericValue <= 25 -> "Potrivit"
+            else -> "Ridicat"
+        }
+        (normalized.contains("hum") || normalized.contains("umid")) && numericValue != null -> when {
+            numericValue < 40 -> "Scăzut"
+            numericValue <= 60 -> "Potrivit"
+            else -> "Ridicat"
+        }
+        else -> fallbackStatus
     }
 }
 
