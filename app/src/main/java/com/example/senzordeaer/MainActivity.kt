@@ -362,6 +362,7 @@ fun MainAppScreen(
                         device = selectedDbDevice!!, 
                         sessionManager = sessionManager, 
                         dbService = dbService,
+                        fastApiService = fastApiService,
                         onOpenWifiSetup = { showWifiProvisioningForDevice = selectedDbDevice },
                         onOpenMeasurements = { showMeasurementsForDevice = selectedDbDevice },
                         onDeviceUpdated = { updatedDevice -> selectedDbDevice = updatedDevice }
@@ -1667,7 +1668,7 @@ fun DevicesListScreen(profile: UserProfile?, sessionManager: SessionManager, dbS
 }
 
 @Composable
-fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbService: SupabaseService, onOpenWifiSetup: () -> Unit, onOpenMeasurements: () -> Unit, onDeviceUpdated: (Device) -> Unit) {
+fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbService: SupabaseService, fastApiService: FastApiService, onOpenWifiSetup: () -> Unit, onOpenMeasurements: () -> Unit, onDeviceUpdated: (Device) -> Unit) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val transportProfileStore = remember { TransportProfileStore(context) }
@@ -1808,6 +1809,7 @@ fun DeviceSettingsDashboard(device: Device, sessionManager: SessionManager, dbSe
     if (showTransportProfileDialog) {
         TransportProfileDialog(
             initialProfile = profileBeingEdited,
+            fastApiService = fastApiService,
             onDismiss = { showTransportProfileDialog = false },
             onSave = { profile ->
                 val savedProfile = transportProfileStore.save(profile)
@@ -1870,9 +1872,11 @@ private fun TransportProfileListDialog(
 @Composable
 private fun TransportProfileDialog(
     initialProfile: TransportProfile?,
+    fastApiService: FastApiService,
     onDismiss: () -> Unit,
     onSave: (TransportProfile) -> Unit
 ) {
+    val coroutineScope = rememberCoroutineScope()
     var cargoName by remember { mutableStateOf(initialProfile?.cargoName ?: "") }
     val limits = remember {
         mutableStateMapOf<String, ParameterLimit>().apply {
@@ -1884,6 +1888,29 @@ private fun TransportProfileDialog(
     var minimumValue by remember { mutableStateOf("") }
     var maximumValue by remember { mutableStateOf("") }
     var validationError by remember { mutableStateOf<String?>(null) }
+    var isFetchingAiSuggestion by remember { mutableStateOf(false) }
+    var aiSuggestion by remember { mutableStateOf<String?>(null) }
+    val nameEntered = cargoName.isNotBlank()
+
+    fun requestAiSuggestion() {
+        if (!nameEntered || isFetchingAiSuggestion) return
+        isFetchingAiSuggestion = true
+        aiSuggestion = null
+        coroutineScope.launch(Dispatchers.IO) {
+            val prompt = "Recomandă praguri optime (valoare minimă și maximă) de temperatură (°C), umiditate (%), " +
+                "CO2 (ppm), PM2.5 (µg/m³) și PM10 (µg/m³) pentru transportul mărfii \"${cargoName.trim()}\". " +
+                "Răspunde scurt, sub formă de listă, cu valori numerice pentru fiecare parametru relevant."
+            val result = try {
+                fastApiService.chatWithAi(prompt)
+            } catch (e: Exception) {
+                "Sugestiile AI nu sunt disponibile momentan: ${e.message}"
+            }
+            withContext(Dispatchers.Main) {
+                aiSuggestion = result
+                isFetchingAiSuggestion = false
+            }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1894,10 +1921,42 @@ private fun TransportProfileDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text("Operatorul stabilește limitele pentru marfa transportată.")
-                OutlinedTextField(cargoName, { cargoName = it }, label = { Text("Nume profil") }, singleLine = true)
+                OutlinedTextField(
+                    value = cargoName,
+                    onValueChange = { cargoName = it },
+                    label = { Text("Nume profil") },
+                    singleLine = true
+                )
+                if (!nameEntered) {
+                    Text(
+                        "Introdu mai întâi numele mărfii pentru a putea adăuga praguri.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                } else {
+                    OutlinedButton(
+                        onClick = { requestAiSuggestion() },
+                        enabled = !isFetchingAiSuggestion,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (isFetchingAiSuggestion) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text("Cere sugestii AI pentru \"${cargoName.trim()}\"")
+                    }
+                    aiSuggestion?.let { suggestion ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        ) {
+                            Text(suggestion, modifier = Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
                 Text("Adaugă prag pentru un parametru", fontWeight = FontWeight.Bold)
                 Box {
-                    OutlinedButton(onClick = { showParameterMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = { showParameterMenu = true }, enabled = nameEntered, modifier = Modifier.fillMaxWidth()) {
                         Text("${selectedParameter.label} (${selectedParameter.unit})")
                     }
                     DropdownMenu(expanded = showParameterMenu, onDismissRequest = { showParameterMenu = false }) {
@@ -1914,8 +1973,8 @@ private fun TransportProfileDialog(
                         }
                     }
                 }
-                OutlinedTextField(minimumValue, { minimumValue = it }, label = { Text("Valoare minimă") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), singleLine = true)
-                OutlinedTextField(maximumValue, { maximumValue = it }, label = { Text("Valoare maximă") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), singleLine = true)
+                OutlinedTextField(minimumValue, { minimumValue = it }, label = { Text("Valoare minimă") }, enabled = nameEntered, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), singleLine = true)
+                OutlinedTextField(maximumValue, { maximumValue = it }, label = { Text("Valoare maximă") }, enabled = nameEntered, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text), singleLine = true)
                 OutlinedButton(onClick = {
                     val minimum = minimumValue.replace(',', '.').toFloatOrNull()
                     val maximum = maximumValue.replace(',', '.').toFloatOrNull()
@@ -1930,7 +1989,7 @@ private fun TransportProfileDialog(
                         minimumValue = ""
                         maximumValue = ""
                     }
-                }, modifier = Modifier.fillMaxWidth()) { Text("Adaugă / actualizează pragul") }
+                }, enabled = nameEntered, modifier = Modifier.fillMaxWidth()) { Text("Adaugă / actualizează pragul") }
                 limits.forEach { (parameterId, limit) ->
                     val parameter = transportParameters.first { it.id == parameterId }
                     Text("${parameter.label}: ${limitLabel(limit, parameter.unit)}")
