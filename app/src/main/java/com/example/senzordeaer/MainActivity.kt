@@ -1876,7 +1876,6 @@ private fun TransportProfileDialog(
     onDismiss: () -> Unit,
     onSave: (TransportProfile) -> Unit
 ) {
-    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var cargoName by remember { mutableStateOf(initialProfile?.cargoName ?: "") }
     val limits = remember {
@@ -1926,13 +1925,6 @@ private fun TransportProfileDialog(
             return
         }
         fetchAiSuggestion(parameter)
-    }
-
-    fun openGoogleSearchFor(parameter: TransportParameter) {
-        val usageInfo = cargoUsageContext.trim().takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
-        val query = "prag recomandat ${parameter.label} transport ${cargoName.trim()}$usageInfo"
-        val uri = android.net.Uri.parse("https://www.google.com/search?q=" + android.net.Uri.encode(query))
-        context.startActivity(Intent(Intent.ACTION_VIEW, uri))
     }
 
     if (showUsageContextDialog) {
@@ -2005,23 +1997,16 @@ private fun TransportProfileDialog(
                     }
                 }
                 if (nameEntered) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { requestAiSuggestion(selectedParameter) },
-                            enabled = !isFetchingAiSuggestion,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            if (isFetchingAiSuggestion) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                            }
-                            Text("Sugestie AI")
+                    OutlinedButton(
+                        onClick = { requestAiSuggestion(selectedParameter) },
+                        enabled = !isFetchingAiSuggestion,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (isFetchingAiSuggestion) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
                         }
-                        OutlinedButton(onClick = { openGoogleSearchFor(selectedParameter) }, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Caută pe Google")
-                        }
+                        Text("Sugestie AI pentru ${selectedParameter.label}")
                     }
                     aiSuggestionsByParameter[selectedParameter.id]?.let { suggestion ->
                         Card(
