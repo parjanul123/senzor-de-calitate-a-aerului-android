@@ -9,33 +9,9 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-private val LightColors = lightColorScheme(
-    primary = Color(0xFF00696D),
-    onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFF6FF6FA),
-    onPrimaryContainer = Color(0xFF002020),
-    secondary = Color(0xFF4A6363),
-    background = Color(0xFFFAFDFC),
-    onBackground = Color(0xFF191C1C),
-    surface = Color(0xFFFAFDFC),
-    onSurface = Color(0xFF191C1C),
-    surfaceVariant = Color(0xFFDAE5E4),
-    error = Color(0xFFBA1A1A)
-)
-
-private val DarkColors = darkColorScheme(
-    primary = Color(0xFF4DD9DE),
-    onPrimary = Color(0xFF003738),
-    primaryContainer = Color(0xFF004F51),
-    onPrimaryContainer = Color(0xFF6FF6FA),
-    secondary = Color(0xFFB1CCCC),
-    background = Color(0xFF191C1C),
-    onBackground = Color(0xFFE0E3E2),
-    surface = Color(0xFF191C1C),
-    onSurface = Color(0xFFE0E3E2),
-    surfaceVariant = Color(0xFF3F4948),
-    error = Color(0xFFFFB4AB)
-)
+// Schemele M3 implicite (aceleași folosite de MaterialTheme() dinainte), fără culori personalizate.
+private val LightColors = lightColorScheme()
+private val DarkColors = darkColorScheme()
 
 /** Preferință de temă (light/dark) persistată local; independentă de sesiunea securizată. */
 class ThemePreferences(context: Context) {
