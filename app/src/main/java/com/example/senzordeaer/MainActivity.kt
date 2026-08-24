@@ -185,16 +185,23 @@ fun MainContent(
             sessionManager = sessionManager,
             isDarkMode = isDarkMode,
             onToggleDarkMode = onToggleDarkMode,
-            onEnableBiometricLogin = { activity ->
-                requestBiometricAuthentication(
-                    activity = activity,
-                    title = "Activează amprenta",
-                    subtitle = "Confirmă cu amprenta pentru a activa conectarea biometrică.",
-                    onSuccess = {
-                        sessionManager.setBiometricLoginEnabled(true)
-                        Toast.makeText(context, "Conectarea cu amprentă a fost activată.", Toast.LENGTH_LONG).show()
-                    }
-                )
+            onSetBiometricLogin = { activity, enable, onResult ->
+                if (enable) {
+                    requestBiometricAuthentication(
+                        activity = activity,
+                        title = "Activează amprenta",
+                        subtitle = "Confirmă cu amprenta pentru a activa conectarea biometrică.",
+                        onSuccess = {
+                            sessionManager.setBiometricLoginEnabled(true)
+                            Toast.makeText(context, "Conectarea cu amprentă a fost activată.", Toast.LENGTH_LONG).show()
+                            onResult(true)
+                        }
+                    )
+                } else {
+                    sessionManager.setBiometricLoginEnabled(false)
+                    Toast.makeText(context, "Conectarea cu amprentă a fost dezactivată.", Toast.LENGTH_SHORT).show()
+                    onResult(false)
+                }
             },
             onLogout = {
                 AlertMonitoringService.stop(context)
@@ -224,7 +231,7 @@ fun MainAppScreen(
     sessionManager: SessionManager,
     isDarkMode: Boolean,
     onToggleDarkMode: () -> Unit,
-    onEnableBiometricLogin: (FragmentActivity) -> Unit,
+    onSetBiometricLogin: (FragmentActivity, Boolean, (Boolean) -> Unit) -> Unit,
     onLogout: () -> Unit,
     openDeviceId: String? = null
 ) {
@@ -233,6 +240,7 @@ fun MainAppScreen(
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var selectedItem by remember { mutableStateOf("Acasă") }
+    var biometricEnabled by remember { mutableStateOf(sessionManager.isBiometricLoginEnabled()) }
     
     var selectedDbDevice by remember { mutableStateOf<Device?>(null) }
     var showWifiProvisioningForDevice by remember { mutableStateOf<Device?>(null) }
@@ -381,7 +389,10 @@ fun MainAppScreen(
                         "Setări" -> SettingsScreen(
                             isDarkMode = isDarkMode,
                             onToggleDarkMode = onToggleDarkMode,
-                            onEnableBiometricLogin = { activity?.let { onEnableBiometricLogin(it) } }
+                            isBiometricEnabled = biometricEnabled,
+                            onToggleBiometricLogin = { enable ->
+                                activity?.let { onSetBiometricLogin(it, enable) { result -> biometricEnabled = result } }
+                            }
                         )
                         "QR Login" -> QRScannerScreen(
                             userId = sessionManager.userId ?: "",
@@ -396,7 +407,12 @@ fun MainAppScreen(
 }
 
 @Composable
-fun SettingsScreen(isDarkMode: Boolean, onToggleDarkMode: () -> Unit, onEnableBiometricLogin: () -> Unit) {
+fun SettingsScreen(
+    isDarkMode: Boolean,
+    onToggleDarkMode: () -> Unit,
+    isBiometricEnabled: Boolean,
+    onToggleBiometricLogin: (Boolean) -> Unit
+) {
     Column(modifier = Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("Setări", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
 
@@ -446,13 +462,13 @@ fun SettingsScreen(isDarkMode: Boolean, onToggleDarkMode: () -> Unit, onEnableBi
                     Column {
                         Text("Conectare cu amprenta", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(
-                            "Activează pentru a te conecta rapid cu amprenta",
+                            if (isBiometricEnabled) "Activată" else "Dezactivată",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
-                TextButton(onClick = onEnableBiometricLogin) { Text("Activează") }
+                Switch(checked = isBiometricEnabled, onCheckedChange = onToggleBiometricLogin)
             }
         }
     }
