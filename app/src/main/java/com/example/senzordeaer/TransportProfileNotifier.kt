@@ -2,7 +2,9 @@ package com.example.senzordeaer
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
@@ -30,6 +32,7 @@ class TransportProfileNotifier(private val context: Context) {
             .setContentText("Profil ${profile.cargoName}: ${violations.first()}")
             .setStyle(NotificationCompat.BigTextStyle().bigText(violations.joinToString("\n")))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(openDeviceIntent(device.device_id))
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify((device.device_id + profile.id).hashCode(), notification)
@@ -59,6 +62,7 @@ class TransportProfileNotifier(private val context: Context) {
             .setContentText("Situația nu este în limitele profilului selectat.")
             .setStyle(NotificationCompat.BigTextStyle().bigText(violations.joinToString("\n")))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(openDeviceIntent(device.device_id))
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify((device.device_id + profile.id).hashCode(), notification)
@@ -80,8 +84,21 @@ class TransportProfileNotifier(private val context: Context) {
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
+    private fun openDeviceIntent(deviceId: String): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java)
+            .setAction(MainActivity.OPEN_DEVICE_ACTION)
+            .putExtra(MainActivity.OPEN_DEVICE_ID_EXTRA, deviceId)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        return PendingIntent.getActivity(
+            context,
+            deviceId.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     private companion object {
         const val CHANNEL_ID = "transport_profile_alerts"
-        const val NOTIFICATION_COOLDOWN_MS = 15 * 60 * 1000L
+        const val NOTIFICATION_COOLDOWN_MS = 60 * 1000L
     }
 }

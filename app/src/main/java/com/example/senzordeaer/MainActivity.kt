@@ -66,20 +66,35 @@ import no.nordicsemi.android.support.v18.scanner.ScanSettings
 data class FoundBleDevice(val address: String, val name: String?, val rssi: Int)
 
 class MainActivity : FragmentActivity() {
+    private val notificationDeviceId = mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationDeviceId.value = intent.getStringExtra(OPEN_DEVICE_ID_EXTRA)
         setContent {
             MaterialTheme {
-                MainContent(activity = this@MainActivity)
+                MainContent(activity = this@MainActivity, openDeviceId = notificationDeviceId.value)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        notificationDeviceId.value = intent.getStringExtra(OPEN_DEVICE_ID_EXTRA)
+    }
+
+    companion object {
+        const val OPEN_DEVICE_ACTION = "com.example.senzordeaer.OPEN_DEVICE"
+        const val OPEN_DEVICE_ID_EXTRA = "open_device_id"
     }
 }
 
 @Composable
-fun MainContent(activity: FragmentActivity) {
+fun MainContent(activity: FragmentActivity, openDeviceId: String? = null) {
     val context = LocalContext.current
     val sessionManager = remember { SessionManager(context) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     
     var isUserLoggedIn by remember {
         mutableStateOf(sessionManager.accessToken != null && !sessionManager.isBiometricLoginEnabled)
@@ -89,6 +104,12 @@ fun MainContent(activity: FragmentActivity) {
 
     LaunchedEffect(isUserLoggedIn) {
         if (isUserLoggedIn) {
+            AlertMonitoringService.start(context)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
             val token = sessionManager.accessToken
             val refresh = sessionManager.refreshToken
             val uid = sessionManager.userId
@@ -127,6 +148,8 @@ fun MainContent(activity: FragmentActivity) {
             } else {
                 isUserLoggedIn = false
             }
+        } else {
+            AlertMonitoringService.stop(context)
         }
     }
 
@@ -147,11 +170,13 @@ fun MainContent(activity: FragmentActivity) {
                 )
             },
             onLogout = {
+                AlertMonitoringService.stop(context)
                 sessionManager.clear()
                 loggedInProfile = null
                 profileError = null
                 isUserLoggedIn = false
-            }
+            },
+            openDeviceId = openDeviceId
         )
     } else {
         AuthScreen(
@@ -171,7 +196,8 @@ fun MainAppScreen(
     profileError: String?,
     sessionManager: SessionManager,
     onEnableBiometricLogin: (FragmentActivity) -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    openDeviceId: String? = null
 ) {
     val context = LocalContext.current
     val activity = context as? FragmentActivity
@@ -185,6 +211,19 @@ fun MainAppScreen(
     
     val dbService = remember { SupabaseService() }
     val fastApiService = remember { FastApiService() }
+
+    LaunchedEffect(openDeviceId, profile) {
+        val deviceId = openDeviceId ?: return@LaunchedEffect
+        val token = sessionManager.accessToken ?: return@LaunchedEffect
+        val userId = sessionManager.userId ?: return@LaunchedEffect
+        val device = withContext(Dispatchers.IO) {
+            dbService.getMyDevices(token, userId).firstOrNull { it.device_id == deviceId }
+        }
+        if (device != null) {
+            selectedDbDevice = null
+            showMeasurementsForDevice = device
+        }
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
