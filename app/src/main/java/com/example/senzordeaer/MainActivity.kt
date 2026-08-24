@@ -1892,14 +1892,17 @@ private fun TransportProfileDialog(
     var isFetchingAiSuggestion by remember { mutableStateOf(false) }
     // Sugestia AI e ținută per parametru, ca să nu se piardă la schimbarea selecției.
     val aiSuggestionsByParameter = remember { mutableStateMapOf<String, String>() }
+    var cargoUsageContext by remember { mutableStateOf("") }
+    var showUsageContextDialog by remember { mutableStateOf(false) }
+    var pendingSuggestionParameter by remember { mutableStateOf<TransportParameter?>(null) }
     val nameEntered = cargoName.isNotBlank()
 
-    fun requestAiSuggestion(parameter: TransportParameter) {
-        if (!nameEntered || isFetchingAiSuggestion) return
+    fun fetchAiSuggestion(parameter: TransportParameter) {
         isFetchingAiSuggestion = true
         coroutineScope.launch(Dispatchers.IO) {
+            val usageInfo = cargoUsageContext.trim().takeIf { it.isNotBlank() }?.let { " de tip \"$it\"" }.orEmpty()
             val prompt = "Care este intervalul recomandat (valoare minimă și maximă) de ${parameter.label} " +
-                "(${parameter.unit}) pentru transportul/depozitarea mărfii \"${cargoName.trim()}\"? " +
+                "(${parameter.unit}) pentru transportul/depozitarea mărfii \"${cargoName.trim()}\"$usageInfo? " +
                 "Bazează-te pe standarde cunoscute de logistică pentru acest tip de marfă. " +
                 "Răspunde scurt, cu un interval numeric și o scurtă motivație."
             val result = try {
@@ -1914,10 +1917,50 @@ private fun TransportProfileDialog(
         }
     }
 
+    // Prima dată cerem tipul de utilizare a mărfii, apoi folosim contextul la fiecare sugestie ulterioară.
+    fun requestAiSuggestion(parameter: TransportParameter) {
+        if (!nameEntered || isFetchingAiSuggestion) return
+        if (cargoUsageContext.isBlank()) {
+            pendingSuggestionParameter = parameter
+            showUsageContextDialog = true
+            return
+        }
+        fetchAiSuggestion(parameter)
+    }
+
     fun openGoogleSearchFor(parameter: TransportParameter) {
-        val query = "prag recomandat ${parameter.label} transport ${cargoName.trim()}"
+        val usageInfo = cargoUsageContext.trim().takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()
+        val query = "prag recomandat ${parameter.label} transport ${cargoName.trim()}$usageInfo"
         val uri = android.net.Uri.parse("https://www.google.com/search?q=" + android.net.Uri.encode(query))
         context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+    }
+
+    if (showUsageContextDialog) {
+        var draftUsage by remember { mutableStateOf(cargoUsageContext) }
+        AlertDialog(
+            onDismissRequest = { showUsageContextDialog = false },
+            title = { Text("Ce tip de marfă este?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Ex: alimentar, electronic, farmaceutic, floral. Ne ajută să dăm o sugestie mai potrivită.")
+                    OutlinedTextField(
+                        value = draftUsage,
+                        onValueChange = { draftUsage = it },
+                        label = { Text("Tip de marfă") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    cargoUsageContext = draftUsage
+                    showUsageContextDialog = false
+                    pendingSuggestionParameter?.let { fetchAiSuggestion(it) }
+                    pendingSuggestionParameter = null
+                }) { Text("Continuă") }
+            },
+            dismissButton = { TextButton(onClick = { showUsageContextDialog = false }) { Text("Anulare") } }
+        )
     }
 
     AlertDialog(
