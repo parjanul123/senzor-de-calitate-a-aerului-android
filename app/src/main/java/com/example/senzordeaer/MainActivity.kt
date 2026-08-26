@@ -2098,7 +2098,7 @@ fun DeviceMeasurementsScreen(device: Device, sessionManager: SessionManager, dbS
                     try {
                         val result = dbService.getDeviceMeasurements(token, device.device_id)
                         withContext(Dispatchers.Main) {
-                            measurements = result?.filter(::isPlausibleMeasurement) ?: emptyList()
+                            measurements = result?.filter(::hasAnyPlausibleValue) ?: emptyList()
                             measurements.firstOrNull()?.let { measurement ->
                                 transportProfileNotifier.notifyIfNeeded(device, transportProfile, measurement)
                             }
@@ -2126,15 +2126,15 @@ fun DeviceMeasurementsScreen(device: Device, sessionManager: SessionManager, dbS
                         TransportStatusCard(profile, current)
                         Spacer(Modifier.height(12.dp))
                     }
-                    AirQualityGauge("CO₂", current.co2.toFloat(), "ppm", 1000f, 2000f, 3000f, "Optim", "Aerisește", "Periculos")
-                    AirQualityGauge("PM1", current.pm1.toFloat(), "µg/m³", 10f, 25f, 100f, "Curat", "Moderat", "Poluat")
-                    AirQualityGauge("PM2.5", current.pm25.toFloat(), "µg/m³", 12f, 35f, 100f, "Curat", "Moderat", "Poluat")
-                    AirQualityGauge("PM10", current.pm10.toFloat(), "µg/m³", 45f, 100f, 200f, "Curat", "Moderat", "Poluat")
-                    CustomGauge("Temperatură", current.temperatura, "°C", 40f, { value -> if (transportProfile?.isWithinLimit("temperature", value) != false) Color(0xFF2E7D32) else Color.Red }, { value -> transportProfile?.let { if (it.isWithinLimit("temperature", value)) "În limite" else "În afara limitei" } ?: "Configurează profilul" })
-                    CustomGauge("Umiditate", current.umiditate, "%", 100f, { value -> if (transportProfile?.isWithinLimit("humidity", value) != false) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> transportProfile?.let { if (it.isWithinLimit("humidity", value)) "În limite" else "În afara limitei" } ?: "Configurează profilul" })
-                    CustomGauge("Presiune", current.presiune, "hPa", 1100f, { value -> if (isNormalAtmosphericPressure(value)) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> if (isNormalAtmosphericPressure(value)) "Normală" else "În afara intervalului" })
-                    CustomGauge("VOC", current.voc, "KOhm", 500f, { value -> if (value >= 100f) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> if (value >= 100f) "Nivel bun" else "Verifică aerisirea" })
-                    CustomGauge("Lumină", current.lux, "lux", 1000f, { value -> if (value >= 100f) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> if (value >= 100f) "Iluminare bună" else "Lumină redusă" })
+                    if (current.isSensorAvailable("co2")) AirQualityGauge("CO₂", current.co2.toFloat(), "ppm", 1000f, 2000f, 3000f, "Optim", "Aerisește", "Periculos") else SensorUnavailableCard("CO₂")
+                    if (current.isSensorAvailable("pm1")) AirQualityGauge("PM1", current.pm1.toFloat(), "µg/m³", 10f, 25f, 100f, "Curat", "Moderat", "Poluat") else SensorUnavailableCard("PM1")
+                    if (current.isSensorAvailable("pm25")) AirQualityGauge("PM2.5", current.pm25.toFloat(), "µg/m³", 12f, 35f, 100f, "Curat", "Moderat", "Poluat") else SensorUnavailableCard("PM2.5")
+                    if (current.isSensorAvailable("pm10")) AirQualityGauge("PM10", current.pm10.toFloat(), "µg/m³", 45f, 100f, 200f, "Curat", "Moderat", "Poluat") else SensorUnavailableCard("PM10")
+                    if (current.isSensorAvailable("temperature")) CustomGauge("Temperatură", current.temperatura, "°C", 40f, { value -> if (transportProfile?.isWithinLimit("temperature", value) != false) Color(0xFF2E7D32) else Color.Red }, { value -> transportProfile?.let { if (it.isWithinLimit("temperature", value)) "În limite" else "În afara limitei" } ?: "Configurează profilul" }) else SensorUnavailableCard("Temperatură")
+                    if (current.isSensorAvailable("humidity")) CustomGauge("Umiditate", current.umiditate, "%", 100f, { value -> if (transportProfile?.isWithinLimit("humidity", value) != false) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> transportProfile?.let { if (it.isWithinLimit("humidity", value)) "În limite" else "În afara limitei" } ?: "Configurează profilul" }) else SensorUnavailableCard("Umiditate")
+                    if (current.isSensorAvailable("pressure")) CustomGauge("Presiune", current.presiune, "hPa", 1100f, { value -> if (isNormalAtmosphericPressure(value)) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> if (isNormalAtmosphericPressure(value)) "Normală" else "În afara intervalului" }) else SensorUnavailableCard("Presiune")
+                    if (current.isSensorAvailable("voc")) CustomGauge("VOC", current.voc, "KOhm", 500f, { value -> if (value >= 100f) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> if (value >= 100f) "Nivel bun" else "Verifică aerisirea" }) else SensorUnavailableCard("VOC")
+                    if (current.isSensorAvailable("light")) CustomGauge("Lumină", current.lux, "lux", 1000f, { value -> if (value >= 100f) Color(0xFF2E7D32) else Color(0xFFFFA000) }, { value -> if (value >= 100f) "Iluminare bună" else "Lumină redusă" }) else SensorUnavailableCard("Lumină")
                     MeasurementCard("Măsurătoare curentă", current)
                 }
                 Spacer(modifier = Modifier.height(24.dp))
@@ -2148,12 +2148,25 @@ fun DeviceMeasurementsScreen(device: Device, sessionManager: SessionManager, dbS
 }
 
 @Composable
+private fun SensorUnavailableCard(title: String) {
+    Card(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text("Senzor indisponibil (valoare invalidă). Verifică hardware-ul.", color = Color(0xFF757575))
+        }
+    }
+}
+
+@Composable
 private fun TransportStatusCard(profile: TransportProfile, measurement: Measurement) {
     val statuses = profile.limits.mapNotNull { (parameterId, limit) ->
         val parameter = transportParameters.firstOrNull { it.id == parameterId } ?: return@mapNotNull null
+        if (!measurement.isSensorAvailable(parameterId)) return@mapNotNull null
         val value = measurement.valueFor(parameterId)
         Triple(parameter, value, profile.isWithinLimit(parameterId, value))
     }
+    val unavailable = profile.limits.keys.filterNot { measurement.isSensorAvailable(it) }
+        .mapNotNull { id -> transportParameters.firstOrNull { it.id == id }?.label }
     val isWithinLimits = statuses.all { it.third }
 
     Card(
@@ -2170,6 +2183,9 @@ private fun TransportStatusCard(profile: TransportProfile, measurement: Measurem
                     "${parameter.label}: $value ${parameter.unit} (prag ${limitLabel(limit, parameter.unit)})",
                     color = if (isWithinLimit) Color(0xFF2E7D32) else Color(0xFFC62828)
                 )
+            }
+            if (unavailable.isNotEmpty()) {
+                Text("Indisponibil: ${unavailable.joinToString(", ")}", color = Color(0xFF757575))
             }
             Spacer(Modifier.height(6.dp))
             Text(
@@ -2207,31 +2223,47 @@ fun Measurement.valueFor(parameterId: String): Float = when (parameterId) {
     else -> 0f
 }
 
-private fun isPlausibleMeasurement(measurement: Measurement): Boolean =
-    measurement.temperatura in -40f..85f &&
-        measurement.umiditate in 0f..100f &&
-        measurement.presiune in 300f..1100f &&
-        measurement.voc >= 0f &&
-        measurement.lux in 0f..200000f &&
-        measurement.co2 in 400..10000 &&
-        measurement.pm1 in 0..1000 &&
-        measurement.pm25 in 0..1000 &&
-        measurement.pm10 in 0..1000
+private val sensorRanges: Map<String, ClosedFloatingPointRange<Float>> = mapOf(
+    "temperature" to -40f..85f,
+    "humidity" to 0f..100f,
+    "pressure" to 300f..1100f,
+    "voc" to 0f..10000f,
+    "light" to 0f..200000f,
+    "co2" to 400f..10000f,
+    "pm1" to 0f..1000f,
+    "pm25" to 0f..1000f,
+    "pm10" to 0f..1000f
+)
 
-    private fun isNormalAtmosphericPressure(value: Float): Boolean = value in 870f..1085f
+fun Measurement.isSensorAvailable(parameterId: String): Boolean {
+    val range = sensorRanges[parameterId] ?: return true
+    val value = valueFor(parameterId)
+    return !value.isNaN() && value in range
+}
+
+// A defective sensor invalidates only its own value, nu întreaga citire.
+private fun hasAnyPlausibleValue(measurement: Measurement): Boolean =
+    sensorRanges.keys.any { measurement.isSensorAvailable(it) }
+
+private fun isNormalAtmosphericPressure(value: Float): Boolean = value in 870f..1085f
+
+private const val SENSOR_UNAVAILABLE = "senzor indisponibil"
+
+private fun Measurement.displayValue(parameterId: String, value: Any): Any =
+    if (isSensorAvailable(parameterId)) value else SENSOR_UNAVAILABLE
 
 private fun measurementRows(measurement: Measurement): List<Pair<String, Any?>> = listOf(
     "device_id" to measurement.device_id,
     "created_at" to measurement.created_at,
-    "temperatura (°C)" to measurement.temperatura,
-    "umiditate (%)" to measurement.umiditate,
-    "presiune" to measurement.presiune,
-    "voc (KOhm)" to measurement.voc,
-    "lux" to measurement.lux,
-    "co2 (ppm)" to measurement.co2,
-    "pm1 (µg/m³)" to measurement.pm1,
-    "pm25 (µg/m³)" to measurement.pm25,
-    "pm10 (µg/m³)" to measurement.pm10
+    "temperatura (°C)" to measurement.displayValue("temperature", measurement.temperatura),
+    "umiditate (%)" to measurement.displayValue("humidity", measurement.umiditate),
+    "presiune" to measurement.displayValue("pressure", measurement.presiune),
+    "voc (KOhm)" to measurement.displayValue("voc", measurement.voc),
+    "lux" to measurement.displayValue("light", measurement.lux),
+    "co2 (ppm)" to measurement.displayValue("co2", measurement.co2),
+    "pm1 (µg/m³)" to measurement.displayValue("pm1", measurement.pm1),
+    "pm25 (µg/m³)" to measurement.displayValue("pm25", measurement.pm25),
+    "pm10 (µg/m³)" to measurement.displayValue("pm10", measurement.pm10)
 )
 
 @Composable

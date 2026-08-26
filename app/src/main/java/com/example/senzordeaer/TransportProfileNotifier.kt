@@ -15,6 +15,7 @@ class TransportProfileNotifier(private val context: Context) {
     fun notifyIfNeeded(device: Device, profile: TransportProfile, measurement: Measurement) {
         val violations = profile.limits.mapNotNull { (parameterId, limit) ->
             val parameter = transportParameters.firstOrNull { it.id == parameterId } ?: return@mapNotNull null
+            if (!measurement.isSensorAvailable(parameterId)) return@mapNotNull null
             val value = measurement.valueFor(parameterId)
             if (profile.isWithinLimit(parameterId, value)) null
             else "${parameter.label}: $value ${parameter.unit} (${limitLabel(limit, parameter.unit)})"
