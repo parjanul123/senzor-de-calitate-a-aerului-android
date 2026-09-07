@@ -195,6 +195,9 @@ fun MainContent(
                             sessionManager.setBiometricLoginEnabled(true)
                             Toast.makeText(context, "Conectarea cu amprentă a fost activată.", Toast.LENGTH_LONG).show()
                             onResult(true)
+                        },
+                        onError = { message ->
+                            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                         }
                     )
                 } else {
@@ -2770,21 +2773,111 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
     var isLoginMode by remember { mutableStateOf(true) }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var confirmationCode by remember { mutableStateOf("") }
+    var awaitingConfirmation by remember { mutableStateOf(false) }
+    var isResetMode by remember { mutableStateOf(false) }
+    var awaitingResetCode by remember { mutableStateOf(false) }
+    var awaitingNewPassword by remember { mutableStateOf(false) }
+    var recoveryAccessToken by remember { mutableStateOf<String?>(null) }
+    var newPassword by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text(text = if (isLoginMode) "Conectează-te" else "Cont Nou", style = MaterialTheme.typography.headlineMedium)
+        Text(text = when {
+            awaitingNewPassword -> "Parolă nouă"
+            isResetMode -> "Resetare parolă"
+            isLoginMode -> "Conectează-te"
+            awaitingConfirmation -> "Confirmă contul"
+            else -> "Cont Nou"
+        }, style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(24.dp))
-        Text("Conectează-te cu email și parolă", style = MaterialTheme.typography.titleMedium)
+        Text(
+            if (awaitingConfirmation || awaitingResetCode) "Introdu codul de 8 cifre primit pe email"
+            else if (awaitingNewPassword) "Introdu noua parolă pentru cont"
+            else if (isResetMode) "Primește un cod de resetare pe email"
+            else "Conectează-te cu email și parolă",
+            style = MaterialTheme.typography.titleMedium
+        )
         Spacer(modifier = Modifier.height(12.dp))
-        OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Parolă") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+        if (awaitingConfirmation || awaitingResetCode) {
+            OutlinedTextField(
+                value = confirmationCode,
+                onValueChange = { confirmationCode = it.filter(Char::isDigit).take(8) },
+                label = { Text("Cod de confirmare") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else if (awaitingNewPassword) {
+            OutlinedTextField(
+                value = newPassword,
+                onValueChange = { newPassword = it },
+                label = { Text("Parolă nouă") },
+                visualTransformation = PasswordVisualTransformation(),
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            OutlinedTextField(value = email, onValueChange = { email = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth())
+            if (!isResetMode) {
+                OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Parolă") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            }
+        }
         Spacer(modifier = Modifier.height(24.dp))
         Button(enabled = !isLoading, onClick = {
             isLoading = true
             coroutineScope.launch(Dispatchers.IO) {
                 try {
-                    if (isLoginMode) {
+                    if (awaitingNewPassword) {
+                        if (newPassword.length < 6) {
+                            throw IllegalArgumentException("Parola nouă trebuie să aibă cel puțin 6 caractere.")
+                        }
+                        val accessToken = recoveryAccessToken
+                            ?: throw IllegalStateException("Sesiunea de resetare a expirat. Cere un cod nou.")
+                        authClient.updatePassword(accessToken, newPassword)
+                        val response = authClient.login(email, newPassword)
+                        val token = response.get("access_token").asString
+                        val refreshToken = response.get("refresh_token").asString
+                        val uid = response.getAsJsonObject("user").get("id").asString
+                        val expiresIn = response.get("expires_in")?.asLong ?: 3600L
+                        sessionManager.saveSession(token, refreshToken, uid, expiresIn)
+                        val profile = dbService.getUserProfile(token, uid)
+                        withContext(Dispatchers.Main) { onLoginSuccess(profile, null) }
+                    } else if (awaitingResetCode) {
+                        if (confirmationCode.length != 8) {
+                            throw IllegalArgumentException("Codul trebuie să aibă 8 cifre.")
+                        }
+                        val response = authClient.verifyPasswordResetOtp(email, confirmationCode)
+                        val accessToken = response.get("access_token")?.asString
+                        if (accessToken.isNullOrBlank()) {
+                            throw IllegalStateException("Codul nu a returnat o sesiune validă.")
+                        }
+                        withContext(Dispatchers.Main) {
+                            recoveryAccessToken = accessToken
+                            awaitingResetCode = false
+                            awaitingNewPassword = true
+                            confirmationCode = ""
+                        }
+                    } else if (awaitingConfirmation) {
+                        if (confirmationCode.length != 8) {
+                            throw IllegalArgumentException("Codul trebuie să aibă 8 cifre.")
+                        }
+                        val response = authClient.verifySignupOtp(email, confirmationCode)
+                        val token = response.get("access_token")?.asString
+                        val refreshToken = response.get("refresh_token")?.asString
+                        val uid = response.getAsJsonObject("user")?.get("id")?.asString
+                        if (token.isNullOrBlank() || refreshToken.isNullOrBlank() || uid.isNullOrBlank()) {
+                            throw IllegalStateException("Confirmarea nu a returnat o sesiune validă.")
+                        }
+                        val expiresIn = response.get("expires_in")?.asLong ?: 3600L
+                        sessionManager.saveSession(token, refreshToken, uid, expiresIn)
+                        val profile = dbService.getUserProfile(token, uid)
+                        withContext(Dispatchers.Main) { onLoginSuccess(profile, null) }
+                    } else if (isResetMode) {
+                        authClient.sendPasswordResetCode(email)
+                        withContext(Dispatchers.Main) { awaitingResetCode = true }
+                        withContext(Dispatchers.Main) { Toast.makeText(context, "Codul de resetare a fost trimis pe email.", Toast.LENGTH_LONG).show() }
+                    } else if (isLoginMode) {
                         val response = authClient.login(email, password)
                         val token = response.get("access_token").asString
                         val refreshToken = response.get("refresh_token").asString
@@ -2794,7 +2887,13 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
                         val profile = dbService.getUserProfile(token, uid)
                         withContext(Dispatchers.Main) { onLoginSuccess(profile, null) }
                     } else {
-                        authClient.signUp(email, password)
+                        val response = authClient.signUp(email, password)
+                        if (response.has("access_token")) {
+                            throw IllegalStateException(
+                                "Confirmarea emailului este dezactivată în Supabase. Activează «Confirm email» din Authentication > Providers > Email."
+                            )
+                        }
+                        withContext(Dispatchers.Main) { awaitingConfirmation = true }
                         withContext(Dispatchers.Main) { Toast.makeText(context, "Verifică emailul!", Toast.LENGTH_LONG).show() }
                     }
                 } catch (e: Exception) {
@@ -2802,7 +2901,30 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
                 } finally { withContext(Dispatchers.Main) { isLoading = false } }
             }
         }, modifier = Modifier.fillMaxWidth()) {
-            if (isLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp)) else Text("Continuă")
+            if (isLoading) CircularProgressIndicator(modifier = Modifier.size(24.dp))
+            else Text(when {
+                awaitingConfirmation || awaitingResetCode -> "Confirmă codul"
+                awaitingNewPassword -> "Salvează parola"
+                isResetMode -> "Trimite codul"
+                else -> "Continuă"
+            })
+        }
+        if (awaitingConfirmation || awaitingResetCode || awaitingNewPassword) {
+            Spacer(modifier = Modifier.height(8.dp))
+            TextButton(onClick = {
+                awaitingConfirmation = false
+                awaitingResetCode = false
+                awaitingNewPassword = false
+                recoveryAccessToken = null
+                confirmationCode = ""
+                newPassword = ""
+                if (isResetMode) {
+                    isResetMode = false
+                    isLoginMode = true
+                }
+            }, enabled = !isLoading) {
+                Text(if (isResetMode) "Înapoi la conectare" else "Înapoi")
+            }
         }
         if (isLoginMode && sessionManager.isBiometricLoginEnabled() && sessionManager.refreshToken != null && sessionManager.userId != null && activity != null) {
             Spacer(modifier = Modifier.height(16.dp))
@@ -2826,18 +2948,24 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
                                 }
                                 try {
                                     val refreshedSession = authClient.refreshSession(refreshToken)
-                                    val token = refreshedSession.get("access_token").asString
-                                    val newRefreshToken = refreshedSession.get("refresh_token").asString
+                                    val token = refreshedSession.get("access_token")?.asString
+                                    val newRefreshToken = refreshedSession.get("refresh_token")?.asString ?: refreshToken
+                                    if (token.isNullOrBlank()) {
+                                        throw IllegalStateException("Supabase nu a returnat access token-ul.")
+                                    }
                                     val expiresIn = refreshedSession.get("expires_in")?.asLong ?: 3600L
                                     sessionManager.saveSession(token, newRefreshToken, userId, expiresIn)
                                     val profile = dbService.getUserProfile(token, userId)
                                     withContext(Dispatchers.Main) { onLoginSuccess(profile, null) }
                                 } catch (error: Exception) {
                                     withContext(Dispatchers.Main) {
-                                        Toast.makeText(context, "Sesiunea nu mai este validă. Conectează-te cu email și parolă.", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(context, "Conectarea biometrică a eșuat: ${error.message ?: "sesiune invalidă"}", Toast.LENGTH_LONG).show()
                                     }
                                 }
                             }
+                        },
+                        onError = { message ->
+                            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                         }
                     )
                 },
@@ -2848,7 +2976,24 @@ fun AuthScreen(onLoginSuccess: (UserProfile?, String?) -> Unit) {
                 Text("Folosește amprenta")
             }
         }
-        TextButton(onClick = { isLoginMode = !isLoginMode }) { Text(if (isLoginMode) "Creează cont" else "Am deja cont") }
+        if (!awaitingConfirmation && !awaitingResetCode && !awaitingNewPassword) {
+            if (!isResetMode) {
+                TextButton(onClick = { isLoginMode = !isLoginMode }) { Text(if (isLoginMode) "Creează cont" else "Am deja cont") }
+            }
+            if (isResetMode) {
+                TextButton(onClick = {
+                    isResetMode = false
+                    isLoginMode = true
+                    email = ""
+                }) { Text("Înapoi la conectare") }
+            } else {
+                TextButton(onClick = {
+                    isResetMode = true
+                    isLoginMode = false
+                    confirmationCode = ""
+                }) { Text("Resetează parola") }
+            }
+        }
     }
 }
 
@@ -2856,7 +3001,8 @@ private fun requestBiometricAuthentication(
     activity: FragmentActivity,
     title: String,
     subtitle: String,
-    onSuccess: () -> Unit
+    onSuccess: () -> Unit,
+    onError: (String) -> Unit
 ) {
     val biometricManager = BiometricManager.from(activity)
     if (biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) != BiometricManager.BIOMETRIC_SUCCESS) {
@@ -2878,6 +3024,16 @@ private fun requestBiometricAuthentication(
         override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
             super.onAuthenticationSucceeded(result)
             onSuccess()
+        }
+
+        override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+            super.onAuthenticationError(errorCode, errString)
+            onError("Autentificarea biometrică a eșuat: $errString")
+        }
+
+        override fun onAuthenticationFailed() {
+            super.onAuthenticationFailed()
+            onError("Amprenta nu a fost recunoscută. Încearcă din nou.")
         }
     })
     val promptInfo = BiometricPrompt.PromptInfo.Builder()

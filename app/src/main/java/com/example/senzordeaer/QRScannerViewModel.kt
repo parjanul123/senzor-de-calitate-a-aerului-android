@@ -26,24 +26,28 @@ class QRScannerViewModel(private val repository: SupabaseRepository = SupabaseRe
 
     fun onQrCodeScanned(qrContent: String) {
         if (_state.value !is QRScannerState.Scanning) return
-        
-        Log.d("QRScanner", "Scanned content: $qrContent")
-        
-        // Extragem token-ul din URL dacă e cazul (format: https://.../?token=XYZ)
-        val token = if (qrContent.contains("token=")) {
-            try {
-                val uri = Uri.parse(qrContent)
-                uri.getQueryParameter("token") ?: qrContent
-            } catch (e: Exception) { qrContent }
-        } else {
-            qrContent
-        }
+
+        val raw = qrContent.trim()
+        Log.d("QRScanner", "Scanned content: '$raw'")
+
+        // Extragem token-ul din URL dacă e cazul (format: https://.../?token=XYZ sau https://.../login/XYZ)
+        val token = try {
+            val uri = Uri.parse(raw)
+            uri.getQueryParameter("token")
+                ?: uri.lastPathSegment?.takeIf { it.isNotBlank() && raw.startsWith("http") }
+                ?: raw
+        } catch (e: Exception) {
+            raw
+        }.trim()
+
+        Log.d("QRScanner", "Extracted token: '$token'")
 
         _state.value = QRScannerState.Processing
 
         viewModelScope.launch {
             try {
                 val request = repository.getLoginRequest(token)
+                Log.d("QRScanner", "Lookup result: found=${request != null}, status=${request?.status}")
                 if (request != null && request.status == "pending") {
                     val now = Clock.System.now()
                     val expiresAt = Instant.parse(request.expires_at)

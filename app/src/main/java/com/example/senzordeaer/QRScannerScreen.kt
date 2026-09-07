@@ -203,6 +203,9 @@ fun CameraPreview(onBarcodeScanned: (String) -> Unit) {
                                     }
                                 }
                             }
+                            .addOnFailureListener { e ->
+                                Log.e("CameraPreview", "Barcode decode failed", e)
+                            }
                             .addOnCompleteListener {
                                 imageProxy.close()
                             }
